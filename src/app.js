@@ -7,6 +7,7 @@ import { createSlider, createSegment, createSwitch } from './ui/controls.js';
 import { glyphSVG, MODES } from './ui/glyphs.js';
 import { toast } from './ui/toast.js';
 import { fmtLen, fmtRadius, fmtGauge, toDisp, parseLen, IN, perpFret } from './ui/units.js';
+import { createPresetMenu } from './ui/presets.js';
 
 const $ = id => document.getElementById(id);
 const app = $('app');
@@ -92,7 +93,7 @@ function recompute(final, reframe) {
   if (!d || !d.strings?.length) return;
   S.design = d;
   updateData(d, final);
-  if (S.view !== '3d') bp?.update(d, S.params.units);
+  if (S.view === 'split' || S.view === 'blueprint') bp?.update(d, S.params.units);
   // 3D: debounce heavy rebuilds while dragging
   clearTimeout(t3d);
   const key = `${d.strings.length}|${Math.round(d.metrics.scaleRange[1] / 30)}|${Math.round(Math.max(d.widths.nut, d.widths.bridge) / 18)}|${d.frets.length > 0}`;
@@ -303,12 +304,24 @@ function buildModes() {
 function refreshModes() { modeBtns.forEach(b => { const on = b.dataset.mode === S.params.mode; b.classList.toggle('on', on); b.setAttribute('aria-checked', on); }); }
 
 // ------------------------------------------------------------ top bar -----
-const viewSeg = createSegment([{ value: '3d', label: '3D' }, { value: 'split', label: 'Split' }, { value: 'blueprint', label: 'Blueprint' }], () => S.view, setView);
+const viewSeg = createSegment([{ value: '3d', label: '3D' }, { value: 'split', label: 'Split' }, { value: 'blueprint', label: 'Blueprint' }, { value: 'paper', label: 'Paper', title: 'White paper: the geometry of curved frets' }], () => S.view, setView);
 $('viewSeg').appendChild(viewSeg.el);
 const unitSeg = createSegment([{ value: 'in', label: 'in' }, { value: 'mm', label: 'mm' }], () => S.params.units, v => { setParam('units', v); }, { cls: 'small' });
 $('unitSeg').appendChild(unitSeg.el);
+// White paper: built the first time the Paper tab opens (src/paper/paper.js).
+let paper = null, paperLoading = null;
+function ensurePaper() {
+  if (paper) return Promise.resolve(paper);
+  return (paperLoading ||= import('./paper/paper.js')
+    .then(m => (paper = m.createPaper({ app, onOpenDesign: (p, label) => { loadParams(p, { msg: `Opened “${label}” from the paper` }); setView('3d'); }, onClose: () => setView('3d') })))
+    .catch(err => { console.error(err); paperLoading = null; toast('The paper could not be loaded: ' + err.message, 'error'); setView('3d'); return null; }));
+}
 function setView(v) {
+  if (!['3d', 'split', 'blueprint', 'paper'].includes(v)) v = '3d';
+  const was = S.view;
   S.view = v; app.dataset.view = v; viewSeg.refresh(); savePrefs();
+  if (v === 'paper') { R3?.setAutoRotate(false); ensurePaper().then(pp => { if (S.view === 'paper') pp?.show().catch(e => console.error(e)); }); return; }
+  if (was === 'paper') { paper?.hide(); R3?.setAutoRotate(S.spin); }
   if (v !== '3d' && S.design) bp.update(S.design, S.params.units);
   setTimeout(() => { updateInsets(); R3?.resize(); R3?.reframe(); }, 720);
   updateInsets(); R3?.resize();
@@ -316,16 +329,10 @@ function setView(v) {
 
 // presets
 function buildPresetMenu() {
-  const menu = $('presetMenu');
-  menu.innerHTML = `<div class="menu-title">Presets</div>` + Object.entries(PRESETS).map(([id, pr]) => {
-    const pp = pr.params || pr, n = pp.numStrings ?? G.DEFAULTS.numStrings, mode = pp.mode ?? G.DEFAULTS.mode;
-    return `<button class="menu-item" role="menuitem" data-id="${id}"><b><span class="mi-tag">${String(n).padStart(2, '0')}·${mode.slice(0, 4).toUpperCase()}</span>${escapeHtml(pr.label || id)}</b>${pr.description ? `<span>${escapeHtml(pr.description)}</span>` : ''}</button>`;
-  }).join('');
-  menu.addEventListener('click', e => {
-    const b = e.target.closest('.menu-item'); if (!b) return;
-    const pr = PRESETS[b.dataset.id];
-    loadParams({ ...(pr.params || pr), units: S.params.units }, { msg: `Loaded “${pr.label || b.dataset.id}”` });
-    closeMenus();
+  createPresetMenu({
+    menu: $('presetMenu'), button: $('presetBtn'), G, builtins: PRESETS,
+    getParams: () => S.params, getDesign: () => S.design,
+    load: (p, msg) => loadParams(p, { msg }), close: closeMenus, toast,
   });
 }
 function toggleMenu(btn, pop) {
@@ -501,8 +508,9 @@ window.addEventListener('resize', () => { clearTimeout(tResize); tResize = setTi
 document.addEventListener('keydown', e => {
   if (e.target.closest('input, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
   const k = e.key.toLowerCase();
+  if (S.view === 'paper' && k !== 'v') return; // reading: leave the keys to the page
   if (k >= '1' && k <= '5') setCam(CAMS[+k - 1][0]);
-  else if (k === 'v') setView({ '3d': 'split', split: 'blueprint', blueprint: '3d' }[S.view]);
+  else if (k === 'v') setView({ '3d': 'split', split: 'blueprint', blueprint: '3d', paper: '3d' }[S.view]);
   else if (k === 'u') setParam('units', S.params.units === 'in' ? 'mm' : 'in');
   else if (k === 's') document.querySelector('[data-t="strings"]').click();
   else if (k === 'i') document.querySelector('[data-t="overlay"]').click();
@@ -520,7 +528,8 @@ async function boot() {
 
   // first compute (sync) so panels have data immediately
   recompute(true, false);
-  if (S.view !== '3d') bp.update(S.design, S.params.units);
+  if (S.view === 'split' || S.view === 'blueprint') bp.update(S.design, S.params.units);
+  if (S.view === 'paper') setView('paper');
 
   try {
     const mod = await import('./render3d.js');
@@ -532,7 +541,7 @@ async function boot() {
     updateInsets();
     R3.setDesign(S.design, { animate: false });
     R3.intro();
-    setTimeout(() => { if (S.spin && R3 && !R3._touched) R3.setAutoRotate(true); refreshDock(); }, 3400);
+    setTimeout(() => { if (S.spin && R3 && !R3._touched && S.view !== 'paper') R3.setAutoRotate(true); refreshDock(); }, 3400);
   } catch (err) {
     console.error(err);
     $('glFallback').hidden = false;
