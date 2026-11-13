@@ -4,15 +4,14 @@
 //   three (x, h, -y). Board top is y=0 in three.
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
-import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
-import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
-import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import {
-  makeWoodMaterial, makeFretMaterial, makeSatinMaterial, makeStringMaterials,
-  makeHardwareMaterials, makeBackdropTexture, makeShadowBlobTexture,
+  makeWoodMaterial, makeFretMaterial, makeSatinMaterial, makeStringMaterials, makeAccentWoodMaterial,
+  makeHardwareMaterials, makeBackdropTexture, setMaxAnisotropy,
 } from './materials.js';
+import { buildBody } from './render/body.js';
+import { createPost } from './render/post.js';
+import { createContactShadow } from './render/contact.js';
 
 // ------------------------------------------------------------ constants ----
 const BOARD_T = 6.4;         // fretboard thickness
@@ -20,8 +19,15 @@ const EDGE_R = 0.7;          // eased board edge radius
 const FRET_W = 2.3, FRET_H = 1.2, FRET_EMBED = 0.3, FRET_TRIM = 0.45, FRET_BEVEL = 1.9;
 const NECK_DEPTH = 19;
 const HEAD_LEN = 30;
-const BODY_TOP = -BOARD_T - 0.5, BODY_T = 32;
-const PLATE_T = 2.2;
+const BODY_TOP = -BOARD_T - 0.5;            // top of the black shell
+const BODY_SEAM = BODY_TOP - 21;            // shell / wood back layer joint
+const BODY_BOTTOM = BODY_TOP - 33;          // underside
+const BODY_TAIL = 24;                       // body ends this far past the bridge line
+const FLOOR_Y = BODY_BOTTOM - 0.2;          // invisible studio floor (contact shadow)
+const BARREL_LEN = 27;                      // tuner barrel length
+const INTRO_LIFT = 46;                      // the instrument settles onto the floor
+const FOV = 30;                             // long-lens look
+const EXPOSURE = 1.0;
 const INCH = 25.4;
 const MARKERS = [3, 5, 7, 9, 12, 15, 17, 19, 21, 24, 27, 29, 31, 33, 36];
 
@@ -272,18 +278,17 @@ function roundedPolyShape(pts, r) {
   return s;
 }
 
-// A dark photo studio for image-based lighting: big soft key box upper left,
-// a long strip light behind for rim, a faint overhead and a dim floor bounce.
-// Metals pick up crisp highlights against black instead of a flat grey room.
+// A dark product-photography studio for image-based lighting. Mostly black,
+// so polished metal mirrors darkness, with a few narrow strip lights that
+// draw crisp streaks along fret crowns and strings, a modest key softbox and
+// a cool rim. No big bright overhead panel: that is what made frets glow.
 export function makeStudioEnvironment() {
   const s = new THREE.Scene();
-  // Graded dome: black floor, dim horizon, softly lit ceiling, so polished
-  // metal always finds something to reflect.
   const dome = new THREE.SphereGeometry(30, 48, 24), col = [], pos = dome.attributes.position;
   for (let i = 0; i < pos.count; i++) {
-    const ny = pos.getY(i) / 30, t = THREE.MathUtils.smoothstep(ny, -0.15, 0.95);
-    const v = 0.01 + 0.85 * Math.pow(t, 2.2);
-    col.push(v * 0.97, v, v * 1.06);
+    const ny = pos.getY(i) / 30, t = THREE.MathUtils.smoothstep(ny, -0.2, 1.0);
+    const v = 0.004 + 0.045 * Math.pow(t, 1.6);
+    col.push(v * 0.95, v, v * 1.08);
   }
   dome.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
   s.add(new THREE.Mesh(dome, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.BackSide })));
@@ -292,12 +297,13 @@ export function makeStudioEnvironment() {
     const p = new THREE.Mesh(new THREE.PlaneGeometry(w, h), m);
     p.position.set(...pos); p.lookAt(...look); s.add(p);
   };
-  panel(9, 6, 9, [-8, 11, 6], [0, 0, 0], 0xfff1e0);           // key softbox
-  panel(16, 1.4, 7, [6, 6, -12], [0, 0, 0], 0xcfe3ff);         // rim strip
-  panel(1.2, 14, 5, [13, 7, 4], [0, 0, 0], 0xdfe9ff);          // side strip
-  panel(22, 14, 5, [1, 16, 1], [0, 0, 0], 0xf4f6fa);           // big overhead softbox
-  panel(30, 30, 0.08, [0, -3.9, 0], [0, 10, 0], 0x8a8278);     // floor bounce
-  panel(6, 3, 4, [7, 9, -6], [0, 0, 0], 0xffffff);            // small kicker
+  panel(7, 4.5, 4.2, [-9, 10, 7], [0, 0, 0], 0xfff2e4);        // key softbox, upper left front
+  panel(26, 0.9, 5.0, [0, 15, -2.5], [0, 0, 0], 0xf1f4f8);      // overhead strip across: fret crown streaks
+  panel(0.8, 24, 2.6, [-3, 15, 2], [0, 0, 0], 0xf4f6fa);        // overhead strip along: string lines
+  panel(16, 1.0, 3.8, [6, 6, -12], [0, 0, 0], 0xcfe0ff);        // cool rim strip behind
+  panel(0.9, 13, 2.4, [13, 7, 4], [0, 0, 0], 0xdfe9ff);         // side strip
+  panel(4.5, 2.6, 2.0, [7, 9, -6], [0, 0, 0], 0xffffff);        // small kicker
+  panel(30, 30, 0.015, [0, -3.9, 0], [0, 10, 0], 0x8a8278);     // floor bounce
   return s;
 }
 
@@ -307,53 +313,48 @@ export function create3D(canvas, { onStats } = {}) {
   if (!gl) throw new Error('WebGL2 is not available');
   const renderer = new THREE.WebGLRenderer({ canvas, context: gl, antialias: true });
   const isSmall = Math.min(window.innerWidth, window.innerHeight) < 700;
-  let dprCap = isSmall ? 1.5 : 2;
+  const DPR_BASE = isSmall ? 1.5 : 2;
+  let dprCap = DPR_BASE;
   renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, dprCap));
   renderer.outputColorSpace = THREE.SRGBColorSpace;
-  renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.15;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;   // used only by the direct (lowest quality) path
+  renderer.toneMappingExposure = EXPOSURE;
   renderer.shadowMap.enabled = true;
   renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   renderer.shadowMap.autoUpdate = false;
+  setMaxAnisotropy(renderer.capabilities.getMaxAnisotropy());
 
   const scene = new THREE.Scene();
   scene.background = makeBackdropTexture();
   const pmrem = new THREE.PMREMGenerator(renderer);
   const envScene = makeStudioEnvironment();
-  const envRT = pmrem.fromScene(envScene, 0.02);
+  const envRT = pmrem.fromScene(envScene, 0.015);
   envScene.traverse(o => { o.geometry?.dispose(); o.material?.dispose?.(); });
   scene.environment = envRT.texture;
   pmrem.dispose();
 
-  const camera = new THREE.PerspectiveCamera(28, 1, 1, 30000);
+  const camera = new THREE.PerspectiveCamera(FOV, 1, 1, 30000);
   camera.position.set(-500, 600, 900);
   const controls = new OrbitControls(camera, canvas);
   Object.assign(controls, { enableDamping: true, dampingFactor: 0.075, rotateSpeed: 0.55, zoomSpeed: 0.9, panSpeed: 0.8,
     screenSpacePanning: true, minDistance: 25, maxDistance: 8000, maxPolarAngle: Math.PI * 0.97, autoRotateSpeed: 0.35 });
 
-  // Lights: warm key from upper left front, cool rim from behind, low fill.
-  const key = new THREE.DirectionalLight(0xfff1df, 2.6);
+  // Lights: warm key from upper left front (casts the fret/string shadows),
+  // cool rim from behind, very low fill. Intensities are illuminance-like:
+  // the board sits around mid-grey after tone mapping, like the photo.
+  const key = new THREE.DirectionalLight(0xfff0dc, 3.6);
   key.castShadow = true;
   key.shadow.mapSize.set(isSmall ? 2048 : 4096, isSmall ? 2048 : 4096);
-  key.shadow.bias = -0.00015; key.shadow.normalBias = 0.04; key.shadow.radius = 3;
-  const rim = new THREE.DirectionalLight(0xbfd8ff, 1.6);
-  const fill = new THREE.HemisphereLight(0x9fb4cc, 0x0b0a09, 0.22);
+  key.shadow.bias = -0.00015; key.shadow.normalBias = 0.04;
+  const rim = new THREE.DirectionalLight(0xbcd5ff, 1.5);
+  const fill = new THREE.HemisphereLight(0x9fb4cc, 0x0b0a09, 0.16);
   scene.add(key, key.target, rim, rim.target, fill);
   const KEY_DIR = new THREE.Vector3(-0.42, 1, 0.3).normalize();
   const RIM_DIR = new THREE.Vector3(0.75, 0.42, -0.6).normalize();
 
-  // Post: MSAA render target -> subtle bloom -> tone map/output.
-  const rt = new THREE.WebGLRenderTarget(4, 4, { type: THREE.HalfFloatType, samples: 4 });
-  const composer = new EffectComposer(renderer, rt);
-  composer.addPass(new RenderPass(scene, camera));
-  const bloom = new UnrealBloomPass(new THREE.Vector2(4, 4), 0.14, 0.35, 1.6);
-  composer.addPass(bloom);
-  composer.addPass(new OutputPass());
-  let quality = 2; // 2 full, 1 no bloom, 0 low dpr + smaller shadows
-
   // Materials
   const mats = {
-    wood: makeWoodMaterial('wenge'), fret: makeFretMaterial('nickel'), satin: makeSatinMaterial(),
+    wood: makeWoodMaterial('wenge'), fret: makeFretMaterial('nickel'), satin: makeSatinMaterial(), accent: makeAccentWoodMaterial(),
     ...makeStringMaterials(), ...makeHardwareMaterials(),
   };
   let finish = { fret: 'nickel', wood: 'wenge' };
@@ -375,17 +376,25 @@ export function create3D(canvas, { onStats } = {}) {
           vThin = clamp((minR / max(r, 1e-6) - 0.6) / 2.5, 0.0, 1.0);
         }`);
       // Specular anti-aliasing: a sub-pixel cylinder averages its whole highlight
-      // ring, so widen the lobe and lift it as the string gets thinner on screen.
+      // ring, so widen the lobe and lift it slightly as the string thins on screen.
       sh.fragmentShader = 'varying float vThin;\n' + sh.fragmentShader
-        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = mix(roughnessFactor, 0.5, vThin);')
-        .replace('#include <opaque_fragment>', 'outgoingLight += vec3(0.11, 0.115, 0.12) * vThin;\n#include <opaque_fragment>');
+        .replace('#include <roughnessmap_fragment>', '#include <roughnessmap_fragment>\n  roughnessFactor = mix(roughnessFactor, 0.45, vThin);')
+        .replace('#include <opaque_fragment>', 'outgoingLight += vec3(0.030, 0.032, 0.034) * vThin;\n#include <opaque_fragment>');
     };
     m.customProgramCacheKey = () => 'thinline';
   }
 
   const root = new THREE.Group(); scene.add(root);
-  const blob = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({ color: 0x000000, alphaMap: makeShadowBlobTexture(), transparent: true, opacity: 0.42, depthWrite: false }));
-  blob.rotation.x = -Math.PI / 2; blob.renderOrder = -1; blob.visible = false; scene.add(blob);
+  const contact = createContactShadow(renderer, { size: isSmall ? 256 : 512 });
+  scene.add(contact.group);
+  let contactDirty = true;
+
+  // Post chain. Helpers that must not occlude in the AO / depth renders.
+  const noAO = [contact.plane];
+  const post = createPost(renderer, scene, camera, { hide: noAO });
+  post.setExposure(EXPOSURE);
+  let quality = isSmall ? 2 : 3; // 3 full, 2 no GTAO, 1 no bloom + lower DPR, 0 direct render
+  let dofWanted = false;
 
   // ------------------------------------------------------ parts & tweens --
   const parts = {};
@@ -454,6 +463,17 @@ export function create3D(canvas, { onStats } = {}) {
     s.mesh.updateMatrix();
   }
 
+  // Unit hardware geometries (shared, never rebuilt).
+  const unitGeo = (g, key) => { g.userData.key = key; return g; };
+  const HW = {
+    saddle: () => unitGeo(new RoundedBoxGeometry(1, 1, 1, 3, 0.16), 'saddle'),
+    crown: () => unitGeo(new THREE.CylinderGeometry(1, 1, 1, 16).rotateZ(Math.PI / 2), 'crown'),
+    screw: () => unitGeo(new THREE.CylinderGeometry(1, 1, 1, 16).translate(0, 0.5, 0), 'screw'),
+    barrel: () => unitGeo(new THREE.CylinderGeometry(0.88, 1, 1, 28, 1), 'barrel'),
+    ring: () => unitGeo(new THREE.CylinderGeometry(1, 1, 1, 28, 1), 'ring'),
+    knob: () => unitGeo(new THREE.CylinderGeometry(0.8, 1, 1, 28, 2), 'knob'),
+  };
+
   // ------------------------------------------------------------ build -----
   let design = null, frame = null, showStrings = true, overlay = true;
   mats.bead = new THREE.MeshBasicMaterial({ color: new THREE.Color(0x7fd0ff).multiplyScalar(1.7), toneMapped: false });
@@ -504,7 +524,7 @@ export function create3D(canvas, { onStats } = {}) {
       mtx.makeTranslation(p.x, nutTop + 0.05, -(p.y - 3.7));
       screwM.push(...mtx.elements);
     }
-    const screwGeo = new THREE.CylinderGeometry(1.25, 1.25, 0.5, 18); screwGeo.translate(0, 0.25, 0); screwGeo.userData.key = 'screw';
+    const screwGeo = new THREE.CylinderGeometry(1.25, 1.25, 0.5, 18); screwGeo.translate(0, 0.25, 0); screwGeo.userData.key = 'nutscrew';
     setInstanced('screws', screwGeo, mats.steel, screwM, { animate });
 
     // --- strings
@@ -531,39 +551,42 @@ export function create3D(canvas, { onStats } = {}) {
       applyString(st);
     });
 
-    // --- bridge: plate, saddles, tuner barrels, brass rings
+    // --- bridge: one saddle unit per string in a row along the bridge line,
+    // each with a steel crown, brass intonation screw, and a gloss-black
+    // tuner barrel with brass rings that overhangs the tail of the body.
     const bSpacing = N > 1 ? Math.min(...d.strings.slice(1).map((s, i) => Math.hypot(s.bridge.x - d.strings[i].bridge.x, s.bridge.y - d.strings[i].bridge.y))) : 12;
-    const sw = clamp(bSpacing * 0.84, 2.2, 10.5), sl = 15, barrelLen = 26, rb = clamp(sw * 0.44, 1.1, 3.8);
-    const brPath = resample(extendCurve(d.bridge.curve, 7), M);
-    const plateProf = roundRectProfile(-9, sl + barrelLen - 2, BODY_TOP - 0.3, BODY_TOP + PLATE_T, 1.2);
-    setPart('plate', toGeometry(sweep(brPath, plateProf, { closed: true })), `plate:${M}`, mats.anodized, { animate });
-    const sadM = [], barM = [], ringM = [];
+    const sw = clamp(bSpacing * 0.8, 2.2, 10.5), sl = 15, rb = clamp(sw * 0.46, 1.1, 3.9);
+    const base = BODY_TOP;
+    const M4 = { saddle: [], crown: [], screw: [], barrel: [], ring: [], knob: [] };
     const X = new THREE.Vector3(), Y = new THREE.Vector3(0, 1, 0), Z = new THREE.Vector3(), S = new THREE.Vector3(), Pp = new THREE.Vector3(), Q = new THREE.Quaternion(), Rm = new THREE.Matrix4();
+    const qX90 = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2), qb = new THREE.Quaternion();
+    const along = (s, dir, t) => ({ x: s.bridge.x + dir.x * t, y: s.bridge.y + dir.y * t });
+    const put = (arr, c, h, q, sx, sy, sz) => { mtx.compose(Pp.set(c.x, h, -c.y), q, S.set(sx, sy, sz)); arr.push(...mtx.elements); };
     d.strings.forEach((s, i) => {
       const dir = dirs[i];
       Z.set(dir.x, 0, -dir.y).normalize(); X.crossVectors(Y, Z).normalize();
       Rm.makeBasis(X, Y, Z); Q.setFromRotationMatrix(Rm);
-      const base = BODY_TOP + PLATE_T, sh = Math.max(2, heights[i].bridgeBottom - base);
-      const c = { x: s.bridge.x + dir.x * (sl / 2 - 3.5), y: s.bridge.y + dir.y * (sl / 2 - 3.5) };
-      mtx.compose(Pp.set(c.x, base + sh / 2, -c.y), Q, S.set(sw, sh, sl)); sadM.push(...mtx.elements);
-      // barrel axis along Z: rotate cylinder (Y) onto Z
-      const qb = Q.clone().multiply(new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), Math.PI / 2));
-      const bc = { x: s.bridge.x + dir.x * (sl - 3.5 + barrelLen / 2), y: s.bridge.y + dir.y * (sl - 3.5 + barrelLen / 2) };
-      const bh = base + rb + 0.6;
-      mtx.compose(Pp.set(bc.x, bh, -bc.y), qb, S.set(rb, barrelLen, rb)); barM.push(...mtx.elements);
-      for (const off of [3.2, 6.2]) {
-        const rc = { x: s.bridge.x + dir.x * (sl - 3.5 + off), y: s.bridge.y + dir.y * (sl - 3.5 + off) };
-        mtx.compose(Pp.set(rc.x, bh, -rc.y), qb, S.set(rb * 1.1, 1.3, rb * 1.1)); ringM.push(...mtx.elements);
-      }
+      qb.copy(Q).multiply(qX90);
+      const crownR = clamp(rads[i] + 0.7, 0.9, 1.5);
+      const top = heights[i].bridgeBottom - 2 * crownR + 0.25;      // housing top under the crown
+      const sh = Math.max(2.5, top - base);
+      put(M4.saddle, along(s, dir, sl / 2 - 4), base + sh / 2, Q, sw, sh, sl);
+      put(M4.crown, along(s, dir, 0), top + crownR - 0.3, Q, sw * 0.62, crownR, crownR);
+      put(M4.screw, along(s, dir, 7.5), base + sh, Q, Math.min(sw * 0.24, 1.5), 0.7, Math.min(sw * 0.24, 1.5));
+      const bh = base + rb + 0.5, b0 = sl - 4.5, bl = BARREL_LEN;
+      put(M4.barrel, along(s, dir, b0 + bl / 2), bh, qb, rb, bl, rb);
+      put(M4.ring, along(s, dir, b0 + 2.2), bh, qb, rb * 1.07, 1.4, rb * 1.07);
+      put(M4.ring, along(s, dir, b0 + bl - 6), bh, qb, rb * 0.95, 1.0, rb * 0.95);
+      put(M4.knob, along(s, dir, b0 + bl + 1.6), bh, qb, rb * 0.93, 3.2, rb * 0.93);
     });
-    const sadGeo = new RoundedBoxGeometry(1, 1, 1, 3, 0.14); sadGeo.userData.key = 'saddle';
-    setInstanced('saddles', sadGeo, mats.anodized, sadM, { animate });
-    const barGeo = new THREE.CylinderGeometry(1, 1, 1, 24, 1); barGeo.userData.key = 'barrel';
-    setInstanced('barrels', barGeo, mats.anodized, barM, { animate });
-    const ringGeo = new THREE.CylinderGeometry(1, 1, 1, 24, 1); ringGeo.userData.key = 'ring';
-    setInstanced('rings', ringGeo, mats.brass, ringM, { animate });
+    setInstanced('saddles', HW.saddle(), mats.anodized, M4.saddle, { animate });
+    setInstanced('crowns', HW.crown(), mats.steel, M4.crown, { animate });
+    setInstanced('sscrews', HW.screw(), mats.brass, M4.screw, { animate });
+    setInstanced('barrels', HW.barrel(), mats.gloss, M4.barrel, { animate });
+    setInstanced('rings', HW.ring(), mats.brass, M4.ring, { animate });
+    setInstanced('knobs', HW.knob(), mats.gloss, M4.knob, { animate });
 
-    // --- pickups: follow a line of equal string fraction between board end and bridge
+    // --- pickups: ivory covers on a line of equal string fraction between board end and bridge
     const tEnd = 1 - Math.pow(2, -d.frets.length / 12), ext = d.params?.boardExtension ?? 6;
     const gapMM = Math.min(...dirs.map(dd => dd.l * (1 - tEnd) - ext));
     const pickupTs = gapMM > 125 ? [0.34, 0.7] : gapMM > 70 ? [0.55] : [];
@@ -572,28 +595,19 @@ export function create3D(canvas, { onStats } = {}) {
         const l = dirs[i].l, t0 = tEnd + (ext + 10) / l, t = t0 + (1 - t0 - 24 / l) * ft;
         return { x: s.nut.x + (s.bridge.x - s.nut.x) * t, y: s.nut.y + (s.bridge.y - s.nut.y) * t };
       });
-      const path = resample(extendCurve(pts.length > 1 ? pts : [{ x: pts[0].x - 1, y: pts[0].y }, { x: pts[0].x + 1, y: pts[0].y }], 4.5), M);
-      setPart('pickup' + k, toGeometry(sweep(path, roundRectProfile(-8.5, 8.5, BODY_TOP - 0.3, BODY_TOP + 4.2, 2.2), { closed: true })), `pickup:${M}`, mats.pickup, { animate });
+      const path = resample(extendCurve(pts.length > 1 ? pts : [{ x: pts[0].x - 1, y: pts[0].y }, { x: pts[0].x + 1, y: pts[0].y }], 5), M);
+      setPart('pickup' + k, toGeometry(sweep(path, roundRectProfile(-8.8, 8.8, BODY_TOP - 0.3, BODY_TOP + 5.6, 1.4), { closed: true })), `pickup:${M}`, mats.pickup, { animate });
     });
     for (let k = pickupTs.length; k < 2; k++) removePart('pickup' + k);
 
-    // --- body (snaps rather than tweens)
-    const fA = d.frets[Math.max(0, d.frets.length - 6)], fB = d.frets[Math.max(0, d.frets.length - 11)];
-    const ca = fA ? fA.curve : d.boardEnd.curve, cb = fB ? fB.curve : d.boardEnd.curve;
-    const Ft = ca[0], Fb = cb[cb.length - 1];
-    const bc = d.bridge.curve, Bt = bc[0], Bb = bc[bc.length - 1];
-    const bodyPts = [
-      { x: Ft.x - 9, y: Ft.y + 26 }, { x: Fb.x + 12, y: Fb.y },
-      { x: Bb.x + 30, y: Bb.y + 6 }, { x: Bb.x + 16, y: Bb.y + 64 },
-      { x: Bt.x - 16, y: Bt.y + 54 }, { x: Bt.x - 26, y: Bt.y - 14 },
-    ];
-    const shape = roundedPolyShape(bodyPts.map(p => ({ x: p.x, y: -p.y })), 20);
-    const bodyGeo = new THREE.ExtrudeGeometry(shape, { depth: BODY_T, bevelEnabled: true, bevelThickness: 3.2, bevelSize: 3.2, bevelSegments: 5, curveSegments: 10 });
-    bodyGeo.rotateX(Math.PI / 2);
-    bodyGeo.translate(0, BODY_TOP - 3.2, 0);
-    bodyGeo.computeBoundingSphere();
-    if (parts.body) { const old = parts.body.mesh.geometry; parts.body.mesh.geometry = bodyGeo; old.dispose(); }
-    else setPart('body', bodyGeo, 'body', mats.satin);
+    // --- body (snaps rather than tweens; it is cheap to rebuild)
+    const body = buildBody(d, { top: BODY_TOP, seam: BODY_SEAM, bottom: BODY_BOTTOM, chamfer: 3, tail: BODY_TAIL });
+    const sigB = 'body' + Math.random();
+    setPart('bodyShell', body.shell, sigB, mats.satin);
+    setPart('bodyWood', body.wood, sigB, mats.accent);
+    if (body.inlay) setPart('bodyInlay', body.inlay, sigB, mats.accent, { cast: false }); else removePart('bodyInlay');
+    if (body.jackRing) { setPart('jackRing', body.jackRing, sigB, mats.steel, { cast: false }); setPart('jackHole', body.jackHole, sigB, mats.socket, { cast: false }); }
+    else { removePart('jackRing'); removePart('jackHole'); }
 
     // --- side dots on the bass edge, pearl dots on the face at 12 & 24
     const dotM = [], inlayM = [];
@@ -622,7 +636,7 @@ export function create3D(canvas, { onStats } = {}) {
         }
       }
     }
-    const dotGeo = new THREE.CylinderGeometry(1.0, 1.0, 1.0, 20); dotGeo.translate(0, 0, 0); dotGeo.userData.key = 'dot';
+    const dotGeo = new THREE.CylinderGeometry(1.0, 1.0, 1.0, 20); dotGeo.userData.key = 'dot';
     dotM.length ? setInstanced('dots', dotGeo, mats.dot, dotM, { animate: false, cast: false }) : removePart('dots');
     const inlayGeo = new THREE.CylinderGeometry(2.2, 2.2, 0.3, 32); inlayGeo.translate(0, -0.13, 0); inlayGeo.userData.key = 'inlay';
     inlayM.length ? setInstanced('inlays', inlayGeo, mats.inlay, inlayM, { animate: false, cast: false }) : removePart('inlays');
@@ -641,38 +655,50 @@ export function create3D(canvas, { onStats } = {}) {
     perpGeo.scale(wPerp, 1, 0.45); perpGeo.translate((px0 + px1) / 2, FRET_H + 0.4, 0);
     setPart('perp', perpGeo, 'perp-' + Math.round(wPerp * 10), mats.perp, { cast: false, receive: false });
     parts.perp.mesh.visible = overlay; parts.perp.mesh.renderOrder = 2;
+    noAO.length = 1;
+    for (const k of ['perp', 'beads', 'dots']) if (parts[k]) noAO.push(parts[k].mesh);
 
     // --- framing data, lights, ground shadow
-    const box = new THREE.Box3();
-    const addP = (x, h, y) => box.expandByPoint(new THREE.Vector3(x, h, -y));
-    for (const p of d.outline) { addP(p.x, 0, p.y); }
-    for (const s of d.strings) { addP(s.bridge.x, 0, s.bridge.y + 34); addP(s.nut.x, 0, s.nut.y - HEAD_LEN); }
-    box.expandByPoint(new THREE.Vector3(0, BODY_TOP - BODY_T, box.min.z));
-    const full = box.clone();
-    for (const p of bodyPts) full.expandByPoint(new THREE.Vector3(p.x, BODY_TOP, -p.y));
+    // Silhouette sample points (root space) for tight framing.
+    const pts = [];
+    const addP = (x, h, y) => pts.push(new THREE.Vector3(x, h, -y));
+    for (const p of d.outline) { addP(p.x, 0.5, p.y); addP(p.x, -BOARD_T - NECK_DEPTH, p.y); }
+    for (const s of d.strings) addP(s.nut.x, 0, s.nut.y - HEAD_LEN);
+    const step = Math.max(1, Math.floor(body.outline.length / 60));
+    for (let i = 0; i < body.outline.length; i += step) { const p = body.outline[i]; addP(p.x, BODY_TOP, p.y); addP(p.x, BODY_BOTTOM, p.y); }
+    d.strings.forEach((s, i) => { const e = along(s, dirs[i], sl - 4.5 + BARREL_LEN + 3.2); addP(e.x, BODY_TOP + 2 * rb + 0.5, e.y); addP(e.x, BODY_TOP, e.y); });
+    const box = new THREE.Box3().setFromPoints(pts);
+    const boardBox = new THREE.Box3();
+    for (const p of d.outline) boardBox.expandByPoint(new THREE.Vector3(p.x, 0, -p.y));
+    for (const s of d.strings) { boardBox.expandByPoint(new THREE.Vector3(s.bridge.x, 0, -(s.bridge.y + 34))); boardBox.expandByPoint(new THREE.Vector3(s.nut.x, 0, -(s.nut.y - HEAD_LEN))); }
     // Anchor the instrument so its centre stays put in the world when the
     // design shifts (e.g. moving the perpendicular moves y = 0 along the board).
-    const zOff = -box.getCenter(new THREE.Vector3()).z, shift = new THREE.Vector3(0, 0, zOff);
-    box.translate(shift); full.translate(shift);
+    const zOff = -boardBox.getCenter(new THREE.Vector3()).z, shift = new THREE.Vector3(0, 0, zOff);
+    box.translate(shift); boardBox.translate(shift);
+    for (const p of pts) p.add(shift);
     if (animate && parts.board && Math.abs(root.position.z - zOff) > 1e-6) {
       const live = new Float32Array([root.position.z]);
       tweens.push({ live, from: live.slice(), to: new Float32Array([zOff]), apply: () => { root.position.z = live[0]; } });
     } else root.position.z = zOff;
     const bridgeC = d.bridge.curve[Math.floor(d.bridge.curve.length / 2)];
     const fret7 = d.frets[Math.min(6, d.frets.length - 1)];
+    const boardPts = pts.slice(0, d.outline.length * 2);
     frame = {
-      box, full, center: box.getCenter(new THREE.Vector3()), size: box.getSize(new THREE.Vector3()),
-      bridge: new THREE.Vector3(bridgeC.x, 4, -bridgeC.y + zOff),
-      macro: fret7 ? new THREE.Vector3(0, 1, -fret7.curve[Math.floor(fret7.curve.length / 2)].y + zOff) : box.getCenter(new THREE.Vector3()),
+      box: boardBox, full: box, pts, boardPts, center: boardBox.getCenter(new THREE.Vector3()), size: boardBox.getSize(new THREE.Vector3()),
+      bridge: new THREE.Vector3(bridgeC.x, 2, -(bridgeC.y + 10) + zOff),
+      macro: fret7 ? new THREE.Vector3(0, 1, -fret7.curve[Math.floor(fret7.curve.length / 2)].y + zOff) : boardBox.getCenter(new THREE.Vector3()),
       nutZ: -d.nut.curve[Math.floor(d.nut.curve.length / 2)].y + zOff,
+      features: body.features, bodySimple: body.plan.simple,
+      bridgeW: Math.abs(d.strings[N - 1].bridge.x - d.strings[0].bridge.x) + 2 * rb + 30,
     };
-    const fc3 = full.getCenter(new THREE.Vector3()), fs = full.getSize(new THREE.Vector3()), R = Math.max(fs.x, fs.z) * 0.62;
+    const fc3 = box.getCenter(new THREE.Vector3()), fs = box.getSize(new THREE.Vector3()), R = Math.max(fs.x, fs.z) * 0.62;
     key.target.position.copy(fc3); key.position.copy(fc3).addScaledVector(KEY_DIR, R * 3);
     Object.assign(key.shadow.camera, { left: -R, right: R, top: R, bottom: -R, near: R * 1.2, far: R * 5 });
     key.shadow.camera.updateProjectionMatrix();
     rim.target.position.copy(fc3); rim.position.copy(fc3).addScaledVector(RIM_DIR, R * 3);
-    blob.position.set(fc3.x, BODY_TOP - BODY_T - 60, fc3.z);
-    blob.scale.set(fs.x * 1.6 + 120, fs.z * 1.1 + 120, 1);
+    const pad = 70;
+    contact.setFootprint(fc3.x, fc3.z, fs.x + pad * 2, fs.z + pad * 2, FLOOR_Y);
+    contactDirty = true;
 
     if (tweens.length) { tween0 = performance.now(); tweenDur = 240; }
     renderer.shadowMap.needsUpdate = true;
@@ -689,6 +715,7 @@ export function create3D(canvas, { onStats } = {}) {
       if (t.apply) t.apply();
     }
     renderer.shadowMap.needsUpdate = true;
+    contactDirty = true;
     if (k >= 1) tweens = [];
     return true;
   }
@@ -699,29 +726,49 @@ export function create3D(canvas, { onStats } = {}) {
   function applyViewOffset() {
     const dx = (insets.left - insets.right) / 2, dy = (insets.top - insets.bottom) / 2;
     camera.setViewOffset(W, H, -dx, -dy, W, H);
+    post.setCenter(W / 2 + dx, H / 2 + dy);
   }
+  // Hero: a low, dramatic three-quarter from the bridge end on the bass side
+  // (vents and inlay towards camera, neck rising away like the reference),
+  // long lens; the instrument fills ~3/4 of the free viewport.
   const VIEWS = {
-    hero: { dir: [-0.36, 0.62, -0.7], fit: 0.84 },
-    player: { dir: [0.62, 0.78, 0.04], fit: 0.9 },
-    top: { dir: [0.0015, 1, 0], fit: 1.03 },
-    macro: { dir: [0.16, 0.13, 1], fixed: 0.42 },
-    bridge: { dir: [0.5, 0.62, 0.62], fixed: 0 },
+    hero: { dir: [0.32, 0.5, -0.8], fill: 0.8 },
+    player: { dir: [0.62, 0.78, 0.04], fill: 0.86 },
+    top: { dir: [0.0015, 1, 0], fill: 0.9, board: false },
+    macro: { dir: [0.16, 0.16, 1], fixed: 0.42 },
+    bridge: { dir: [0.46, 0.5, 0.74], fixed: 0 },
   };
-  function fitDistance(dir, target, box) {
+  const _r = new THREE.Vector3(), _up = new THREE.Vector3(), _f = new THREE.Vector3(), _c = new THREE.Vector3();
+  // Fit a point cloud: find target + distance so the projected silhouette is
+  // centred in the free viewport and fills `fill` of its limiting dimension.
+  function fitPose(dir, pts, fill) {
     const fov = THREE.MathUtils.degToRad(camera.fov);
-    const tanV = Math.tan(fov / 2) * Math.max(0.2, (H - insets.top - insets.bottom) / H);
-    const tanH = Math.tan(fov / 2) * camera.aspect * Math.max(0.2, (W - insets.left - insets.right) / W);
-    const f = dir.clone().negate();
-    let up = new THREE.Vector3(0, 1, 0);
-    if (Math.abs(f.y) > 0.999) up.set(0, 0, -1);
-    const r = new THREE.Vector3().crossVectors(f, up).normalize(), u = new THREE.Vector3().crossVectors(r, f);
+    const tanV = Math.tan(fov / 2) * Math.max(0.2, (H - insets.top - insets.bottom) / H) * fill;
+    const tanH = Math.tan(fov / 2) * camera.aspect * Math.max(0.2, (W - insets.left - insets.right) / W) * fill;
+    _f.copy(dir).negate();
+    _up.set(0, 1, 0); if (Math.abs(_f.y) > 0.999) _up.set(0, 0, -1);
+    _r.crossVectors(_f, _up).normalize(); _up.crossVectors(_r, _f);
+    const target = new THREE.Vector3();
+    for (const p of pts) target.add(p);
+    target.multiplyScalar(1 / pts.length);
     let D = 0;
-    for (let i = 0; i < 8; i++) {
-      const c = new THREE.Vector3(i & 1 ? box.max.x : box.min.x, i & 2 ? box.max.y : box.min.y, i & 4 ? box.max.z : box.min.z).sub(target);
-      const qx = c.dot(r), qy = c.dot(u), qz = c.dot(f);
-      D = Math.max(D, Math.abs(qx) / tanH - qz, Math.abs(qy) / tanV - qz);
+    for (let it = 0; it < 4; it++) {
+      D = 0;
+      for (const p of pts) {
+        _c.copy(p).sub(target);
+        const qx = _c.dot(_r), qy = _c.dot(_up), qz = _c.dot(_f);
+        D = Math.max(D, Math.abs(qx) / tanH - qz, Math.abs(qy) / tanV - qz);
+      }
+      // re-centre on the projected extents
+      let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
+      for (const p of pts) {
+        _c.copy(p).sub(target);
+        const z = D + _c.dot(_f), x = _c.dot(_r) / z, y = _c.dot(_up) / z;
+        x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+      }
+      target.addScaledVector(_r, (x0 + x1) / 2 * D).addScaledVector(_up, (y0 + y1) / 2 * D);
     }
-    return D * 1.06;
+    return { target, dist: D };
   }
   function viewPose(name) {
     const v = VIEWS[name] || VIEWS.hero;
@@ -732,10 +779,9 @@ export function create3D(canvas, { onStats } = {}) {
       dist = frame.size.z * v.fixed;
     } else if (name === 'bridge') {
       target = frame.bridge.clone();
-      dist = Math.max(130, frame.size.x * 1.25 + 60);
+      dist = Math.max(150, frame.bridgeW * 1.15 + 70);
     } else {
-      target = frame.center.clone(); target.y = 0;
-      dist = fitDistance(dir, target, name === 'top' ? frame.box : frame.full) * v.fit;
+      ({ target, dist } = fitPose(dir, v.board ? frame.boardPts : frame.pts, v.fill));
     }
     return { pos: target.clone().addScaledVector(dir, dist), target };
   }
@@ -768,6 +814,7 @@ export function create3D(canvas, { onStats } = {}) {
   }
 
   // ----------------------------------------------------------- intro -----
+  // The instrument settles down onto the studio floor as the camera swings in.
   let intro = null;
   function playIntro() {
     if (!frame) return;
@@ -779,21 +826,33 @@ export function create3D(canvas, { onStats } = {}) {
     fly = { t0: performance.now() + 150, dur: 3000, fromPos: camera.position.clone(), fromT: hero.target.clone(), to: hero, easeFn: easeOut };
     controls.enabled = false;
     intro = { t0: performance.now(), dur: 2400 };
-    root.position.y = -60;
+    root.position.y = INTRO_LIFT;
   }
   function stepIntro(now) {
     if (!intro) return false;
     const k = clamp((now - intro.t0) / intro.dur, 0, 1);
-    root.position.y = -60 * (1 - easeOut(k));
+    root.position.y = INTRO_LIFT * (1 - easeOut(k));
     if (k >= 1) intro = null;
     renderer.shadowMap.needsUpdate = true;
+    contactDirty = true;
     return true;
   }
 
   // ------------------------------------------------------------ loop -----
   let dirty = true, running = true, autoRotate = false, lastInteract = 0;
-  controls.addEventListener('start', () => { lastInteract = performance.now(); if (autoRotate) { autoRotate = false; controls.autoRotate = false; api.onAutoRotateStop?.(); } fly = null; controls.enabled = true; });
+  controls.addEventListener('start', () => { lastInteract = performance.now(); api._touched = true; if (autoRotate) { autoRotate = false; controls.autoRotate = false; api.onAutoRotateStop?.(); } fly = null; controls.enabled = true; });
   controls.addEventListener('change', () => { dirty = true; });
+  function updateDoF() {
+    // Shallow focus only for the macro view, focused on the orbit target.
+    const on = dofWanted && quality >= 2 && currentView === 'macro';
+    post.dof.enabled = on;
+    if (on) post.dof.uniforms.focus.value = camera.position.distanceTo(controls.target);
+  }
+  function draw() {
+    if (contactDirty) { contact.render(scene, noAO.slice(1)); contactDirty = false; }
+    updateDoF();
+    if (quality >= 1) post.render(); else renderer.render(scene, camera);
+  }
   const fpsWin = []; let lastT = performance.now(), degradeCooldown = 0;
   function loop(now) {
     if (!running) return;
@@ -808,37 +867,45 @@ export function create3D(canvas, { onStats } = {}) {
     if (!active && !dirty) { lastT = now; return; }
     const dist = camera.position.distanceTo(controls.target);
     camera.near = clamp(dist / 300, 0.2, 20); camera.far = dist * 40 + 5000; camera.updateProjectionMatrix();
-    if (quality >= 1) composer.render(); else renderer.render(scene, camera);
+    draw();
     dirty = false;
-    // adaptive quality: watch frame time while animating
+    // adaptive quality: watch frame time while animating. Drops GTAO first,
+    // then bloom and DPR, then the composer itself.
     const dt = now - lastT; lastT = now;
     if (dt < 250) { fpsWin.push(dt); if (fpsWin.length > 90) fpsWin.shift(); }
     if (fpsWin.length >= 90 && now > degradeCooldown) {
-      const avg = fpsWin.reduce((a, b) => a + b, 0) / fpsWin.length;
-      if (avg > (quality === 2 ? 21 : 30) && quality > 0) { setQuality(quality - 1); degradeCooldown = now + 4000; fpsWin.length = 0; }
+      // Median, not mean: shader compiles and texture uploads in the first
+      // frames must not cost a capable GPU its ambient occlusion.
+      const avg = fpsWin.slice().sort((a, b) => a - b)[fpsWin.length >> 1];
+      const limit = quality >= 3 ? 19.5 : quality === 2 ? 22 : 30;
+      if (avg > limit && quality > 0) { setQuality(quality - 1); degradeCooldown = now + 4000; fpsWin.length = 0; }
       onStats?.({ fps: 1000 / avg, quality });
     }
   }
   function setQuality(q) {
-    quality = clamp(q, 0, 2);
-    bloom.enabled = quality >= 1;
-    if (quality === 1) dprCap = Math.min(dprCap, 1.5);
-    if (quality === 0) {
-      dprCap = 1; renderer.setPixelRatio(1);
-      key.shadow.mapSize.set(2048, 2048); key.shadow.map?.dispose(); key.shadow.map = null;
+    const prev = quality;
+    quality = clamp(q, 0, 3);
+    post.setQuality(quality);
+    dprCap = quality >= 2 ? DPR_BASE : quality === 1 ? Math.min(DPR_BASE, 1.5) : 1;
+    const sm = quality === 0 || isSmall ? 2048 : 4096;
+    if (key.shadow.mapSize.x !== sm) {
+      key.shadow.mapSize.set(sm, sm); key.shadow.map?.dispose(); key.shadow.map = null;
       renderer.shadowMap.needsUpdate = true;
     }
+    if (prev !== quality) fpsWin.length = 0;
     resize();
   }
   function resize() {
     const rect = canvas.parentElement.getBoundingClientRect();
     W = Math.max(1, Math.round(rect.width)); H = Math.max(1, Math.round(rect.height));
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, dprCap));
+    // Pixel budget per quality level: big retina canvases are fill-rate bound,
+    // and 4x MSAA already resolves edges, so cap total pixels, not just DPR.
+    const budget = [0.9e6, 1.6e6, 2.4e6, 2.1e6][quality];
+    const dpr = Math.max(0.75, Math.min(window.devicePixelRatio || 1, dprCap, Math.sqrt(budget / (W * H))));
+    renderer.setPixelRatio(dpr);
     renderer.setSize(W, H, false);
     stringUniforms.uPxPerUnit.value = (H * renderer.getPixelRatio() / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
-    composer.setPixelRatio(renderer.getPixelRatio());
-    composer.setSize(W, H);
-    bloom.resolution.set(W, H);
+    post.setSize(W, H, renderer.getPixelRatio());
     camera.aspect = W / H;
     applyViewOffset();
     camera.updateProjectionMatrix();
@@ -848,6 +915,7 @@ export function create3D(canvas, { onStats } = {}) {
 
   const api = {
     renderer, scene, camera, controls,
+    _touched: false,
     setDesign(d, opts) { const first = !design; build(d, opts); if (first) flyTo('hero', { instant: true }); },
     setFinish(f) {
       finish = { ...finish, ...f };
@@ -855,7 +923,7 @@ export function create3D(canvas, { onStats } = {}) {
       if (f.wood) { mats.wood.dispose(); mats.wood = makeWoodMaterial(finish.wood); if (parts.board) parts.board.mesh.material = mats.wood; }
       dirty = true;
     },
-    setShowStrings(on) { showStrings = on; strings.forEach(s => s.mesh.visible = on); renderer.shadowMap.needsUpdate = true; dirty = true; },
+    setShowStrings(on) { showStrings = on; strings.forEach(s => s.mesh.visible = on); renderer.shadowMap.needsUpdate = true; contactDirty = true; dirty = true; },
     setOverlay(on) { overlay = on; if (parts.beads) parts.beads.mesh.visible = on; if (parts.perp) parts.perp.mesh.visible = on; dirty = true; },
     setAutoRotate(on) { autoRotate = on; controls.autoRotate = on; dirty = true; },
     get autoRotate() { return autoRotate; },
@@ -866,22 +934,37 @@ export function create3D(canvas, { onStats } = {}) {
     intro: playIntro,
     resize,
     setQuality, get quality() { return quality; },
+    // Shallow depth of field in the Macro view (off elsewhere, and off by default).
+    setDepthOfField(on) { dofWanted = !!on; dirty = true; },
+    get depthOfField() { return dofWanted; },
     invalidate() { dirty = true; },
+    get _frame() { return frame; },
+    get _views() { return VIEWS; },
+    get _post() { return post; },
+    get _mats() { return mats; },
+    _lights: { key, rim, fill },
     // Render synchronously and copy the frame (preserveDrawingBuffer is off).
     snapshot(region = [0, 0, 1, 1]) {
-      if (quality >= 1) composer.render(); else renderer.render(scene, camera);
+      draw();
       const c = renderer.domElement, w = c.width, h = c.height;
       const out = document.createElement('canvas');
       out.width = Math.round(region[2] * w); out.height = Math.round(region[3] * h);
       out.getContext('2d').drawImage(c, region[0] * w, region[1] * h, out.width, out.height, 0, 0, out.width, out.height);
       return out;
     },
-    dispose() { running = false; renderer.dispose(); },
+    dispose() {
+      running = false; ro.disconnect();
+      for (const k of Object.keys(parts)) removePart(k);
+      strings.forEach(s => s.mesh.geometry.dispose());
+      for (const m of Object.values(mats)) m.dispose?.();
+      post.dispose(); contact.dispose(); envRT.dispose(); controls.dispose(); renderer.dispose();
+    },
     onAutoRotateStop: null,
   };
-  resize();
+  setQuality(quality);
   let roT = null;
-  new ResizeObserver(() => { cancelAnimationFrame(roT); roT = requestAnimationFrame(resize); }).observe(canvas.parentElement);
+  const ro = new ResizeObserver(() => { cancelAnimationFrame(roT); roT = requestAnimationFrame(resize); });
+  ro.observe(canvas.parentElement);
   requestAnimationFrame(loop);
   return api;
 }
