@@ -451,7 +451,7 @@ async function loadExports() {
   document.querySelectorAll('.dbtn.exp[data-fmt]').forEach(b => {
     const fmt = b.dataset.fmt, fn = X && (EXPORT_FNS[fmt].map(n => X[n]).find(f => typeof f === 'function') || (typeof X.exportDesign === 'function' ? (d) => X.exportDesign(d, fmt) : null));
     b.disabled = !fn; b.classList.toggle('soon', !fn);
-    b.title = fn ? { svg: '1:1 SVG template', dxf: 'DXF for CAD/CNC (mm)', pdf: 'Tiled 1:1 PDF with fret table', csv: 'Fret positions per string' }[fmt] : `${fmt.toUpperCase()} export is coming online`;
+    b.title = fn ? { svg: '1:1 SVG template (laser / print)', dxf: 'DXF for CAM: one smooth spline per fret (mm)', pdf: 'Tiled 1:1 PDF with fret table', csv: 'Fret positions per string' }[fmt] : `${fmt.toUpperCase()} export is coming online`;
     b._fn = fn;
   });
 }

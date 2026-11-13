@@ -403,7 +403,14 @@ export function computeDesign(params = {}) {
     if (ss.length < 3) ss.splice(1, 0, (sLo + sHi) / 2);
     const curve = ss.map(s => pointAt(s, tOf(s)));
     const crossings = strings.map(st => pointAt(st.i, tOf(st.i)));
-    return { ss, curve, crossings };
+    return { ss, curve, crossings, sLo, sHi };
+  };
+  // Exact evaluator for exporters (smooth splines for CAM): sRange is the
+  // string-index span edge to edge; at(s) is non-enumerable so designs stay plain data.
+  const withEval = (obj, line, tOf) => {
+    obj.sRange = [line.sLo, line.sHi];
+    Object.defineProperty(obj, 'at', { value: s => pointAt(s, tOf(s)), enumerable: false });
+    return obj;
   };
 
   const kappaAt = (tOf, s) => {
@@ -452,14 +459,14 @@ export function computeDesign(params = {}) {
   for (let n = 1; n <= p.numFrets; n++) {
     const t = fretFraction(n), tOf = () => t;
     const line = traceLine(tOf);
-    frets.push({ n, t, perpSide: Math.sign(Math.round((t - r) * 1e9)), crossings: line.crossings, curve: line.curve, ...analyse(tOf, line) });
+    frets.push(withEval({ n, t, perpSide: Math.sign(Math.round((t - r) * 1e9)), crossings: line.crossings, curve: line.curve, ...analyse(tOf, line) }, line, tOf));
   }
-  const mk = t => { const tOf = () => t, line = traceLine(tOf); return { crossings: line.crossings, curve: line.curve, ...analyse(tOf, line) }; };
+  const mk = t => { const tOf = () => t, line = traceLine(tOf); return withEval({ crossings: line.crossings, curve: line.curve, ...analyse(tOf, line) }, line, tOf); };
   const nut = mk(0), bridge = mk(1);
   const tLast = fretFraction(p.numFrets);
   const endOf = s => tLast + p.boardExtension / Math.max(prof.at(s), 1);
   const endLine = traceLine(endOf);
-  const boardEnd = { curve: endLine.curve, crossings: endLine.crossings };
+  const boardEnd = withEval({ curve: endLine.curve, crossings: endLine.crossings }, endLine, endOf);
   const outline = [...nut.curve, ...boardEnd.curve.slice().reverse()];
 
   // Widths at the nut and bridge (edge to edge, along x).

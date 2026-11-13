@@ -197,7 +197,7 @@ What this says:
 
 All exports are pure functions of a Design and return `{ data, mime, extension }`:
 
-* `exportSVG(design)`: a 1:1 SVG in mm (nut left, treble top), with layers for centreline, strings, outline, nut, frets, bridge and labels.
-* `exportDXF(design)`: R12 ASCII DXF in mm, with layers OUTLINE, NUT, FRETS, STRINGS, CENTRE, BRIDGE and TEXT. Frets are dense polylines that pass through every crossing.
+* `exportSVG(design)`: a 1:1 SVG (size in mm, user units are px at 96/in so Fusion also imports it 1:1), nut left, treble top. Curves are cubic Bézier paths from the same splines; CAD splits a path per segment, so use the DXF for toolpaths.
+* `exportDXF(design)`: R2000 (AC1015) ASCII DXF in mm, with layers OUTLINE, NUT, FRETS, STRINGS, CENTRE, BRIDGE and TEXT. Each fret, the nut, the bridge line and the board end is ONE cubic SPLINE entity, fitted to the exact curve within 0.001 mm (src/cad.js), so CAM can trace a slot as a single entity. Verified in Autodesk Fusion: one control-point spline per fret, 1:1, at the true origin.
 * `exportPDF(design)`: a cover page plus the fret-position table (distance from the nut along each string, in the design's units), then the 1:1 template tiled across Letter-landscape pages (in both directions if the board is wide). Tiles overlap by 15 mm and have dashed cut lines and ⊕ registration marks. Every tile carries a 100 mm and a 4 in check ruler.
 * `exportCSV(design)`: one row per string per fret (nut, frets, bridge) with distance from the nut along the string and x/y of the crossing, in mm and inches.

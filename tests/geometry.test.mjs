@@ -261,7 +261,7 @@ test('exports produce valid-looking files', () => {
 
     const dxf = exportDXF(d).data.split('\r\n');
     assert.equal(dxf[0], '0'); assert.equal(dxf[1], 'SECTION');
-    assert.ok(dxf.includes('ENTITIES') && dxf.includes('POLYLINE'));
+    assert.ok(dxf.includes('ENTITIES') && dxf.includes('SPLINE'));
     assert.equal(dxf[dxf.length - 2], 'EOF');
 
     const pdf = exportPDF(d);
@@ -291,4 +291,42 @@ test('SVG imports 1:1 in CAD that reads px at 96 dpi (Autodesk Fusion), with no 
   assert.ok(Math.abs(+m[3] / +m[1] - 96 / 25.4) < 1e-4, 'viewBox width is px at 96 dpi');
   assert.ok(Math.abs(+m[4] / +m[2] - 96 / 25.4) < 1e-4, 'viewBox height is px at 96 dpi');
   assert.ok(!/stroke-dasharray/.test(svg), 'no dash arrays (they shatter into loose segments in CAD)');
+});
+
+test('CAM export: every fret is ONE smooth spline through every string crossing (DXF R2000 + SVG)', async () => {
+  const { smoothCurves } = await import('../src/exports.js');
+  const { evalBSpline } = await import('../src/cad.js');
+  for (const key of ['mark-b', 's-curve-12', 'exp-6', 'd-scale-9']) {
+    const d = computeDesign(PRESETS[key].params);
+    const sm = smoothCurves(d);
+    assert.ok(sm.ok, `${key}: all curves fitted`);
+    assert.ok(sm.maxErr <= 0.001, `${key}: max deviation ${sm.maxErr} mm`);
+    // Each crossing lies on its fret spline (closest-point search on the spline).
+    d.frets.forEach((f, i) => {
+      const sp = sm.frets[i].spline;
+      const pts = Array.from({ length: 4001 }, (_, k) => evalBSpline(sp, k / 4000));
+      for (const c of f.crossings) {
+        let best = Infinity, bi = 0;
+        pts.forEach((q, k) => { const e = Math.hypot(q.x - c.x, q.y - c.y); if (e < best) { best = e; bi = k; } });
+        // refine around the nearest sample
+        let lo = Math.max(0, bi - 1) / 4000, hi = Math.min(4000, bi + 1) / 4000;
+        for (let it = 0; it < 60; it++) {
+          const a = lo + (hi - lo) / 3, b = hi - (hi - lo) / 3;
+          const ea = Math.hypot(evalBSpline(sp, a).x - c.x, evalBSpline(sp, a).y - c.y), eb = Math.hypot(evalBSpline(sp, b).x - c.x, evalBSpline(sp, b).y - c.y);
+          if (ea < eb) hi = b; else lo = a;
+        }
+        const q = evalBSpline(sp, (lo + hi) / 2);
+        assert.ok(Math.hypot(q.x - c.x, q.y - c.y) <= 0.001, `${key} fret ${f.n}: crossing off spline`);
+      }
+    });
+    const dxf = exportDXF(d).data.split('\r\n');
+    const ver = dxf[dxf.indexOf('$ACADVER') + 2];
+    assert.equal(ver, 'AC1015');
+    const splines = dxf.filter((v, k) => v === 'SPLINE' && dxf[k - 1] === '0').length;
+    assert.equal(splines, d.frets.length + 4, `${key}: one SPLINE per fret + nut(outline) + board end + nut + bridge`);
+    assert.ok(!dxf.includes('POLYLINE') && !dxf.includes('VERTEX'), 'no polyline chains');
+    const svg = exportSVG(d).data;
+    const fretPaths = [...svg.matchAll(/<path d="M[^"]*" data-fret="\d+"\/>/g)];
+    assert.equal(fretPaths.length, d.frets.length, `${key}: one <path> per fret`);
+  }
 });

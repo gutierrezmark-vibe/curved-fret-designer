@@ -8,6 +8,8 @@
 //   along  = design y (mm, nut -> bridge)
 //   across = design x (mm, treble -> bass)
 
+import { curveSpline, mapSpline, toBeziers, dxfR2000 } from './cad.js';
+
 const IN = 25.4;
 const MM2PT = 72 / 25.4;
 
@@ -20,6 +22,24 @@ function titleOf(design, opts) {
   const [a, b] = design.metrics.scaleRange;
   const L = v => (u === 'mm' ? `${v.toFixed(1)} mm` : `${(v / IN).toFixed(3)}"`);
   return `${n}-string ${p.mode} ${L(a)}${n > 1 && b - a > 1e-6 ? ' - ' + L(b) : ''}`;
+}
+
+/**
+ * Smooth CAM curves: each fret, the nut, the bridge line and the board end as ONE
+ * cubic B-spline (design coordinates), fitted to the engine's exact curve within
+ * `tol` mm. Returns null for a curve the design can't evaluate (then exporters
+ * fall back to the dense polyline).
+ */
+export function smoothCurves(design, tol = 0.001) {
+  const fit = c => (c && typeof c.at === 'function' && c.sRange ? curveSpline(c, tol) : null);
+  const out = {
+    nut: fit(design.nut), bridge: fit(design.bridge), boardEnd: fit(design.boardEnd),
+    frets: design.frets.map(f => ({ n: f.n, spline: fit(f) })),
+  };
+  const all = [out.nut, out.bridge, out.boardEnd, ...out.frets.map(f => f.spline)].filter(Boolean);
+  out.maxErr = all.reduce((m, sp) => Math.max(m, sp.maxErr), 0);
+  out.ok = all.length === design.frets.length + 3;
+  return out;
 }
 
 /** All the lines of the top view, in design coordinates. */
@@ -54,6 +74,15 @@ export function exportSVG(design, opts = {}) {
   const px = v => f3(v * K);
   const T = q => `${px(q.y - b.minY + M)},${px(q.x - b.minX + M)}`;
   const poly = (pts, attrs) => `<polyline points="${pts.map(T).join(' ')}" ${attrs}/>`;
+  // Smooth curves as cubic Bezier <path>s converted exactly from the fitted B-splines.
+  const sm = smoothCurves(design, opts.tol ?? 0.001);
+  const segsD = sp => toBeziers(sp).map(([, c1, c2, e]) => `C${T(c1)} ${T(c2)} ${T(e)}`).join(' ');
+  const pathOf = (sp, pts, attrs) => sp ? `<path d="M${T(sp.ctrl[0])} ${segsD(sp)}" ${attrs}/>` : poly(pts, attrs);
+  const reverseSp = sp => sp && ({ ...sp, knots: sp.knots.map(k => 1 - k).reverse(), ctrl: sp.ctrl.slice().reverse() });
+  const outlineEl = (sm.nut && sm.boardEnd)
+    ? (() => { const nutC = design.nut.curve, endC = design.boardEnd.curve, rev = reverseSp(sm.boardEnd);
+        return `<path d="M${T(sm.nut.ctrl[0])} ${segsD(sm.nut)} L${T(endC[endC.length - 1])} ${segsD(rev)} Z"/>`; })()
+    : `<polygon points="${P.outline.map(T).join(' ')}"/>`;
   const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const title = titleOf(design, opts);
   const out = [];
@@ -64,10 +93,10 @@ export function exportSVG(design, opts = {}) {
   out.push('<g fill="none" stroke="#000" stroke-linecap="round" stroke-linejoin="round">');
   out.push(`<g id="centreline" stroke="#999" stroke-width="${px(0.15)}">${poly(P.centre, '')}</g>`);
   out.push(`<g id="strings" stroke="#999" stroke-width="${px(0.12)}">${P.strings.map(s => poly(s, '')).join('')}</g>`);
-  out.push(`<g id="outline" stroke-width="${px(0.3)}"><polygon points="${P.outline.map(T).join(' ')}"/></g>`);
-  out.push(`<g id="nut" stroke-width="${px(0.5)}">${poly(P.nut, '')}</g>`);
-  out.push(`<g id="frets" stroke-width="${px(0.25)}">${P.frets.map(fr => poly(fr.curve, `data-fret="${fr.n}"`)).join('')}</g>`);
-  out.push(`<g id="bridge" stroke-width="${px(0.4)}">${poly(P.bridge, '')}</g>`);
+  out.push(`<g id="outline" stroke-width="${px(0.3)}">${outlineEl}</g>`);
+  out.push(`<g id="nut" stroke-width="${px(0.5)}">${pathOf(sm.nut, P.nut, '')}</g>`);
+  out.push(`<g id="frets" stroke-width="${px(0.25)}">${P.frets.map((fr, i) => pathOf(sm.frets[i].spline, fr.curve, `data-fret="${fr.n}"`)).join('')}</g>`);
+  out.push(`<g id="bridge" stroke-width="${px(0.4)}">${pathOf(sm.bridge, P.bridge, '')}</g>`);
   out.push('</g>');
   out.push(`<g id="labels" font-family="Helvetica, Arial, sans-serif" font-size="${px(2.6)}" text-anchor="middle" fill="#000">`);
   for (const fr of P.frets) { const q = fr.curve[0]; out.push(`<text x="${px(q.y - b.minY + M)}" y="${px(q.x - b.minX + M - 2.5)}">${fr.n}</text>`); }
@@ -83,51 +112,42 @@ export function exportSVG(design, opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// DXF (R12 ASCII, mm). X = along the board, Y = up = toward the treble edge.
+// DXF R2000 (AC1015, mm). X = along the board, Y = up = toward the treble edge.
+// Every fret, the nut, the bridge line and the board end is ONE SPLINE entity
+// (degree 3, within 0.001 mm of the exact curve), so CAM can trace each slot as a
+// single curve. The board outline is a closed chain of four entities: nut spline,
+// treble edge LINE, board-end spline, bass edge LINE.
 
 export function exportDXF(design, opts = {}) {
   const P = drawingParts(design), b = P.bounds;
-  const X = q => q.y, Y = q => -q.x;
-  const L = [];
-  const g = (code, val) => { L.push(String(code), String(val)); };
-  const layers = [['OUTLINE', 7], ['NUT', 1], ['FRETS', 5], ['STRINGS', 8], ['CENTRE', 3], ['BRIDGE', 6], ['TEXT', 7]];
-  g(0, 'SECTION'); g(2, 'HEADER');
-  g(9, '$ACADVER'); g(1, 'AC1009');
-  g(9, '$INSUNITS'); g(70, 4);
-  g(9, '$EXTMIN'); g(10, f3(b.minY)); g(20, f3(-b.maxX)); g(30, 0);
-  g(9, '$EXTMAX'); g(10, f3(b.maxY)); g(20, f3(-b.minX)); g(30, 0);
-  g(0, 'ENDSEC');
-  g(0, 'SECTION'); g(2, 'TABLES');
-  g(0, 'TABLE'); g(2, 'LTYPE'); g(70, 1);
-  g(0, 'LTYPE'); g(2, 'CONTINUOUS'); g(70, 0); g(3, 'Solid line'); g(72, 65); g(73, 0); g(40, 0);
-  g(0, 'ENDTAB');
-  g(0, 'TABLE'); g(2, 'STYLE'); g(70, 1);
-  g(0, 'STYLE'); g(2, 'STANDARD'); g(70, 0); g(40, 0); g(41, 1); g(50, 0); g(71, 0); g(42, 2.5); g(3, 'txt'); g(4, '');
-  g(0, 'ENDTAB');
-  g(0, 'TABLE'); g(2, 'LAYER'); g(70, layers.length);
-  for (const [name, color] of layers) { g(0, 'LAYER'); g(2, name); g(70, 0); g(62, color); g(6, 'CONTINUOUS'); }
-  g(0, 'ENDTAB');
-  g(0, 'ENDSEC');
-  g(0, 'SECTION'); g(2, 'ENTITIES');
-  const polyline = (pts, layer, closed = false) => {
-    g(0, 'POLYLINE'); g(8, layer); g(66, 1); g(70, closed ? 1 : 0); g(10, 0); g(20, 0); g(30, 0);
-    for (const q of pts) { g(0, 'VERTEX'); g(8, layer); g(10, f3(X(q))); g(20, f3(Y(q))); g(30, 0); }
-    g(0, 'SEQEND'); g(8, layer);
+  const tol = opts.tol ?? 0.001;
+  const map = q => ({ x: q.y, y: -q.x });
+  const sm = smoothCurves(design, tol);
+  const E = [];
+  const curve = (sp, pts, layer) => {
+    if (sp) E.push({ type: 'SPLINE', layer, spline: mapSpline(sp, map) });
+    else for (let i = 0; i + 1 < pts.length; i++) E.push({ type: 'LINE', layer, a: map(pts[i]), b: map(pts[i + 1]) });
   };
-  const line = (a, c, layer) => { g(0, 'LINE'); g(8, layer); g(10, f3(X(a))); g(20, f3(Y(a))); g(30, 0); g(11, f3(X(c))); g(21, f3(Y(c))); g(31, 0); };
-  const text = (q, h, s, layer = 'TEXT') => { g(0, 'TEXT'); g(8, layer); g(10, f3(X(q))); g(20, f3(Y(q))); g(30, 0); g(40, h); g(1, ascii(s)); g(7, 'STANDARD'); };
-  polyline(P.outline, 'OUTLINE', true);
-  polyline(P.nut, 'NUT');
-  for (const fr of P.frets) polyline(fr.curve, 'FRETS');
-  polyline(P.bridge, 'BRIDGE');
-  for (const s of P.strings) line(s[0], s[1], 'STRINGS');
-  line(P.centre[0], P.centre[1], 'CENTRE');
+  // Outline: nut + edges + board end (each edge is straight by construction).
+  const nutC = design.nut.curve, endC = design.boardEnd.curve;
+  curve(sm.nut, nutC, 'OUTLINE');
+  E.push({ type: 'LINE', layer: 'OUTLINE', a: map(nutC[0]), b: map(endC[0]) });
+  curve(sm.boardEnd, endC, 'OUTLINE');
+  E.push({ type: 'LINE', layer: 'OUTLINE', a: map(nutC[nutC.length - 1]), b: map(endC[endC.length - 1]) });
+  curve(sm.nut, nutC, 'NUT');
+  design.frets.forEach((f, i) => curve(sm.frets[i].spline, f.curve, 'FRETS'));
+  curve(sm.bridge, design.bridge.curve, 'BRIDGE');
+  for (const st of P.strings) E.push({ type: 'LINE', layer: 'STRINGS', a: map(st[0]), b: map(st[1]) });
+  E.push({ type: 'LINE', layer: 'CENTRE', a: map(P.centre[0]), b: map(P.centre[1]) });
+  const text = (q, h, str) => E.push({ type: 'TEXT', layer: 'TEXT', at: map(q), height: h, text: ascii(str) });
   for (const fr of P.frets) { const q = fr.curve[0]; text({ x: q.x - 4, y: q.y - 0.8 }, 2.5, String(fr.n)); }
   text({ x: P.nut[0].x - 4, y: P.nut[0].y - 2 }, 2.5, 'NUT');
   text({ x: b.maxX + 8, y: b.minY }, 3, titleOf(design, opts) + ' - 1:1 mm');
-  g(0, 'ENDSEC');
-  g(0, 'EOF');
-  return { data: L.join('\r\n') + '\r\n', mime: 'application/dxf', extension: 'dxf' };
+  const data = dxfR2000({
+    entities: E,
+    extents: { minX: b.minY, minY: -b.maxX, maxX: b.maxY, maxY: -b.minX },
+  });
+  return { data, mime: 'application/dxf', extension: 'dxf', maxDeviationMm: sm.maxErr, splines: sm.ok };
 }
 
 // ---------------------------------------------------------------------------
