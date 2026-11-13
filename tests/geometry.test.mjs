@@ -281,3 +281,14 @@ test('exports produce valid-looking files', () => {
     near(Number(row12[6]), d.strings[0].scale / 2, 1e-3);
   }
 });
+
+test('SVG imports 1:1 in CAD that reads px at 96 dpi (Autodesk Fusion), with no dashed lines', async () => {
+  const E = await import('../src/exports.js');
+  const d = computeDesign(PRESETS['mark-b'].params);
+  const svg = E.exportSVG(d).data;
+  const m = svg.match(/width="([\d.]+)mm" height="([\d.]+)mm" viewBox="0 0 ([\d.]+) ([\d.]+)"/);
+  assert.ok(m, 'root svg has mm size and a viewBox');
+  assert.ok(Math.abs(+m[3] / +m[1] - 96 / 25.4) < 1e-4, 'viewBox width is px at 96 dpi');
+  assert.ok(Math.abs(+m[4] / +m[2] - 96 / 25.4) < 1e-4, 'viewBox height is px at 96 dpi');
+  assert.ok(!/stroke-dasharray/.test(svg), 'no dash arrays (they shatter into loose segments in CAD)');
+});

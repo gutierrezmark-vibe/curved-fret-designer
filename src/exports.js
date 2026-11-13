@@ -44,33 +44,39 @@ function drawingParts(design) {
 
 /** 1:1 SVG top-view template (units: mm). */
 export function exportSVG(design, opts = {}) {
+  // Coordinates are written in CSS px at 96 px/in (1 mm = 96/25.4 px), and the root
+  // width/height are given in mm. Browsers, Inkscape and Illustrator honour the mm size,
+  // and CAD importers that ignore units and read px at 96 dpi (Autodesk Fusion) also land
+  // at exactly 1:1. Lines are solid: dash arrays turn into hundreds of loose segments in CAD.
+  const K = 96 / 25.4;
   const P = drawingParts(design), b = P.bounds, M = 15;
   const W = b.maxY - b.minY + 2 * M, H = b.maxX - b.minX + 2 * M;
-  const T = q => `${f3(q.y - b.minY + M)},${f3(q.x - b.minX + M)}`;
+  const px = v => f3(v * K);
+  const T = q => `${px(q.y - b.minY + M)},${px(q.x - b.minX + M)}`;
   const poly = (pts, attrs) => `<polyline points="${pts.map(T).join(' ')}" ${attrs}/>`;
   const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   const title = titleOf(design, opts);
   const out = [];
   out.push('<?xml version="1.0" encoding="UTF-8"?>');
-  out.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${f3(W)}mm" height="${f3(H)}mm" viewBox="0 0 ${f3(W)} ${f3(H)}">`);
+  out.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${f3(W)}mm" height="${f3(H)}mm" viewBox="0 0 ${px(W)} ${px(H)}">`);
   out.push(`<title>${esc(title)}</title>`);
-  out.push('<desc>Curved Fret Designer top-view template at 1:1 (1 user unit = 1 mm). Nut on the left, treble edge at the top.</desc>');
+  out.push('<desc>Curved Fret Designer top-view template at 1:1. Size is in mm; user units are px at 96 per inch. Nut on the left, treble edge at the top.</desc>');
   out.push('<g fill="none" stroke="#000" stroke-linecap="round" stroke-linejoin="round">');
-  out.push(`<g id="centreline" stroke="#888" stroke-width="0.2" stroke-dasharray="6 2 1 2">${poly(P.centre, '')}</g>`);
-  out.push(`<g id="strings" stroke="#888" stroke-width="0.15" stroke-dasharray="2 1">${P.strings.map(s => poly(s, '')).join('')}</g>`);
-  out.push(`<g id="outline" stroke-width="0.3"><polygon points="${P.outline.map(T).join(' ')}"/></g>`);
-  out.push(`<g id="nut" stroke-width="0.5">${poly(P.nut, '')}</g>`);
-  out.push(`<g id="frets" stroke-width="0.25">${P.frets.map(fr => poly(fr.curve, `data-fret="${fr.n}"`)).join('')}</g>`);
-  out.push(`<g id="bridge" stroke-width="0.4" stroke-dasharray="4 1.5">${poly(P.bridge, '')}</g>`);
+  out.push(`<g id="centreline" stroke="#999" stroke-width="${px(0.15)}">${poly(P.centre, '')}</g>`);
+  out.push(`<g id="strings" stroke="#999" stroke-width="${px(0.12)}">${P.strings.map(s => poly(s, '')).join('')}</g>`);
+  out.push(`<g id="outline" stroke-width="${px(0.3)}"><polygon points="${P.outline.map(T).join(' ')}"/></g>`);
+  out.push(`<g id="nut" stroke-width="${px(0.5)}">${poly(P.nut, '')}</g>`);
+  out.push(`<g id="frets" stroke-width="${px(0.25)}">${P.frets.map(fr => poly(fr.curve, `data-fret="${fr.n}"`)).join('')}</g>`);
+  out.push(`<g id="bridge" stroke-width="${px(0.4)}">${poly(P.bridge, '')}</g>`);
   out.push('</g>');
-  out.push('<g id="labels" font-family="Helvetica, Arial, sans-serif" font-size="2.6" text-anchor="middle" fill="#000">');
-  for (const fr of P.frets) { const q = fr.curve[0]; out.push(`<text x="${f3(q.y - b.minY + M)}" y="${f3(q.x - b.minX + M - 2.5)}">${fr.n}</text>`); }
+  out.push(`<g id="labels" font-family="Helvetica, Arial, sans-serif" font-size="${px(2.6)}" text-anchor="middle" fill="#000">`);
+  for (const fr of P.frets) { const q = fr.curve[0]; out.push(`<text x="${px(q.y - b.minY + M)}" y="${px(q.x - b.minX + M - 2.5)}">${fr.n}</text>`); }
   const n0 = P.nut[0];
-  out.push(`<text x="${f3(n0.y - b.minY + M)}" y="${f3(n0.x - b.minX + M - 2.5)}">NUT</text>`);
+  out.push(`<text x="${px(n0.y - b.minY + M)}" y="${px(n0.x - b.minX + M - 2.5)}">NUT</text>`);
   const b0 = P.bridge[0];
-  out.push(`<text x="${f3(b0.y - b.minY + M)}" y="${f3(b0.x - b.minX + M - 2.5)}">BRIDGE</text>`);
-  design.strings.forEach(s => out.push(`<text x="${f3(s.nut.y - b.minY + M - 4)}" y="${f3(s.nut.x - b.minX + M + 0.9)}" text-anchor="end">${s.i + 1}</text>`));
-  out.push(`<text x="${M}" y="${f3(H - 4)}" text-anchor="start" font-size="3">${esc(title)} - 1:1, mm</text>`);
+  out.push(`<text x="${px(b0.y - b.minY + M)}" y="${px(b0.x - b.minX + M - 2.5)}">BRIDGE</text>`);
+  design.strings.forEach(s => out.push(`<text x="${px(s.nut.y - b.minY + M - 4)}" y="${px(s.nut.x - b.minX + M + 0.9)}" text-anchor="end">${s.i + 1}</text>`));
+  out.push(`<text x="${px(M)}" y="${px(H - 4)}" text-anchor="start" font-size="${px(3)}">${esc(title)} - 1:1, mm</text>`);
   out.push('</g>');
   out.push('</svg>');
   return { data: out.join('\n'), mime: 'image/svg+xml', extension: 'svg' };
@@ -95,6 +101,9 @@ export function exportDXF(design, opts = {}) {
   g(0, 'TABLE'); g(2, 'LTYPE'); g(70, 1);
   g(0, 'LTYPE'); g(2, 'CONTINUOUS'); g(70, 0); g(3, 'Solid line'); g(72, 65); g(73, 0); g(40, 0);
   g(0, 'ENDTAB');
+  g(0, 'TABLE'); g(2, 'STYLE'); g(70, 1);
+  g(0, 'STYLE'); g(2, 'STANDARD'); g(70, 0); g(40, 0); g(41, 1); g(50, 0); g(71, 0); g(42, 2.5); g(3, 'txt'); g(4, '');
+  g(0, 'ENDTAB');
   g(0, 'TABLE'); g(2, 'LAYER'); g(70, layers.length);
   for (const [name, color] of layers) { g(0, 'LAYER'); g(2, name); g(70, 0); g(62, color); g(6, 'CONTINUOUS'); }
   g(0, 'ENDTAB');
@@ -106,7 +115,7 @@ export function exportDXF(design, opts = {}) {
     g(0, 'SEQEND'); g(8, layer);
   };
   const line = (a, c, layer) => { g(0, 'LINE'); g(8, layer); g(10, f3(X(a))); g(20, f3(Y(a))); g(30, 0); g(11, f3(X(c))); g(21, f3(Y(c))); g(31, 0); };
-  const text = (q, h, s, layer = 'TEXT') => { g(0, 'TEXT'); g(8, layer); g(10, f3(X(q))); g(20, f3(Y(q))); g(30, 0); g(40, h); g(1, ascii(s)); };
+  const text = (q, h, s, layer = 'TEXT') => { g(0, 'TEXT'); g(8, layer); g(10, f3(X(q))); g(20, f3(Y(q))); g(30, 0); g(40, h); g(1, ascii(s)); g(7, 'STANDARD'); };
   polyline(P.outline, 'OUTLINE', true);
   polyline(P.nut, 'NUT');
   for (const fr of P.frets) polyline(fr.curve, 'FRETS');
