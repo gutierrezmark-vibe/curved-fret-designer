@@ -11,6 +11,21 @@ const el = (tag, attrs = {}, parent) => {
   return e;
 };
 const P = p => ({ X: p.y, Y: p.x });
+// 180° view: the whole drawing turned half a turn (nut on the right, bass edge on
+// top). Done by negating every design point, so text stays upright and every
+// label, dimension and hover test keeps working in the same drawing frame.
+const NEG = q => (q ? { ...q, x: -q.x, y: -q.y } : q);
+const NEGS = a => (a ? a.map(NEG) : a);
+function rotateDesign(d) {
+  const line = c => c && { ...c, curve: NEGS(c.curve), crossings: NEGS(c.crossings), inflectionPoints: NEGS(c.inflectionPoints) };
+  return {
+    ...d,
+    outline: NEGS(d.outline),
+    strings: d.strings.map(st => ({ ...st, nut: NEG(st.nut), bridge: NEG(st.bridge) })),
+    frets: d.frets.map(line), nut: line(d.nut), bridge: line(d.bridge), boardEnd: line(d.boardEnd),
+  };
+}
+const FLIP_KEY = 'cfd.blueprint.flip180';
 const pathD = pts => pts.map((p, i) => (i ? 'L' : 'M') + p.y.toFixed(3) + ' ' + p.x.toFixed(3)).join('');
 
 export function createBlueprint(container, { onHover } = {}) {
@@ -24,17 +39,33 @@ export function createBlueprint(container, { onHover } = {}) {
   const gMain = el('g', {}, svg);
   const tip = document.createElement('div'); tip.className = 'bp-tip'; container.appendChild(tip);
   const block = document.createElement('div'); block.className = 'bp-titleblock'; container.appendChild(block);
+  let flip = false;
+  try { flip = localStorage.getItem(FLIP_KEY) === '1'; } catch { /* storage unavailable */ }
+  const flipBtn = document.createElement('button'); flipBtn.type = 'button'; flipBtn.className = 'bp-flip';
+  flipBtn.title = 'Turn the drawing 180° (nut on the right)';
+  flipBtn.innerHTML = '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M15.5 10A5.5 5.5 0 1110 4.5h3"/><path d="M11.4 2.4l2.2 2.1-2.2 2.1"/></svg><span>180°</span>';
+  container.appendChild(flipBtn);
+  let design = null, vd = null;   // design: engine data; vd: what is drawn (maybe turned 180°)
+  const setFlip = on => {
+    flip = !!on; flipBtn.classList.toggle('on', flip); flipBtn.setAttribute('aria-pressed', String(flip));
+    try { localStorage.setItem(FLIP_KEY, flip ? '1' : '0'); } catch { /* ignore */ }
+    if (design) { vd = flip ? rotateDesign(design) : design; fit = computeFit(); pan = { x: -pan.x, y: -pan.y }; draw(); }
+  };
+  flipBtn.addEventListener('click', () => setFlip(!flip));
+  flipBtn.addEventListener('pointerdown', e => e.stopPropagation());
+  flipBtn.addEventListener('dblclick', e => e.stopPropagation());
+  flipBtn.classList.toggle('on', flip); flipBtn.setAttribute('aria-pressed', String(flip));
 
-  let design = null, units = 'in', insets = { left: 0, right: 0, top: 0, bottom: 0 };
+  let units = 'in', insets = { left: 0, right: 0, top: 0, bottom: 0 };
   let fit = null, zoom = 1, pan = { x: 0, y: 0 }, W = 1, H = 1, hoverN = null;
 
   function computeFit() {
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
     const add = p => { x0 = Math.min(x0, p.y); x1 = Math.max(x1, p.y); y0 = Math.min(y0, p.x); y1 = Math.max(y1, p.x); };
-    design.outline.forEach(add); design.strings.forEach(s => { add(s.nut); add(s.bridge); });
-    design.bridge.curve.forEach(add);
+    vd.outline.forEach(add); vd.strings.forEach(s => { add(s.nut); add(s.bridge); });
+    vd.bridge.curve.forEach(add);
     const pad = 30;
-    return { x0: x0 - pad, x1: x1 + pad, y0: y0 - pad - 12, y1: y1 + pad + 12 };
+    return { x0: x0 - pad, x1: x1 + pad, y0: y0 - pad - 12, y1: y1 + pad + 24 };
   }
   function viewBox() {
     const tb = block.offsetHeight ? block.offsetHeight + 18 : 0;   // keep clear of the title block
@@ -48,7 +79,7 @@ export function createBlueprint(container, { onHover } = {}) {
   }
 
   function draw() {
-    if (!design) return;
+    if (!vd) return;
     const r = container.getBoundingClientRect(); W = Math.max(1, r.width); H = Math.max(1, r.height);
     if (!fit) fit = computeFit();
     const vb = viewBox(), k = 1 / vb.s;                      // mm per px
@@ -64,7 +95,7 @@ export function createBlueprint(container, { onHover } = {}) {
     el('path', { d: dMaj, class: 'grid-major' }, gGrid);
 
     gMain.innerHTML = '';
-    const fs = 10.5 * k, d = design, N = d.strings.length;
+    const fs = 10.5 * k, d = vd, N = d.strings.length, SG = flip ? -1 : 1;
     const g = (cls) => el('g', { class: cls }, gMain);
     const text = (parent, x, y, str, attrs = {}) => { const t = el('text', { x, y, 'font-size': fs, ...attrs }, parent); t.textContent = str; return t; };
 
@@ -93,19 +124,21 @@ export function createBlueprint(container, { onHover } = {}) {
     // perpendicular line
     const gp = g('perp');
     const xs = d.outline.map(p => p.x), xmin = Math.min(...xs), xmax = Math.max(...xs);
-    el('line', { x1: 0, y1: xmin - 14, x2: 0, y2: xmax + 14, class: 'perp' }, gp);
+    // Runs past the bottom scale dimension so its label sits clear of that dimension's text.
+    const perpEnd = xmax + Math.max(9, 30 * k) + 22 * k;
+    el('line', { x1: 0, y1: xmin - 14, x2: 0, y2: perpEnd, class: 'perp' }, gp);
     const pf = perpFret(d.params.perpRatio ?? 0.5);
-    text(gp, 2.5 * k * 2, xmax + 14, `⟂  PERPENDICULAR  ·  ${Number.isFinite(pf) ? 'fret ' + (Math.abs(pf - Math.round(pf)) < 0.01 ? Math.round(pf) : pf.toFixed(1)) : 'bridge'}`, { class: 'perp-label', 'dominant-baseline': 'hanging' });
+    text(gp, 2.5 * k * 2, perpEnd - 9 * k, `⟂  PERPENDICULAR  ·  ${Number.isFinite(pf) ? 'fret ' + (Math.abs(pf - Math.round(pf)) < 0.01 ? Math.round(pf) : pf.toFixed(1)) : 'bridge'}`, { class: 'perp-label', 'dominant-baseline': 'hanging' });
     // frets
     const gf = g('frets');
     const fretEls = new Map();
-    let lastLabelX = -Infinity;
+    let lastLabelX = null;
     d.frets.forEach(f => {
       const side = f.sagitta != null && f.sagitta < 0.02 ? 's0' : f.perpSide > 0 ? 'sp' : f.perpSide < 0 ? 'sn' : 's0';
       const p = el('path', { d: pathD(f.curve), class: `fret ${side}` + (f.n % 12 === 0 ? ' octave' : ''), 'data-n': f.n }, gf);
       fretEls.set(f.n, p);
-      const a = f.curve[0];
-      if ((a.y - lastLabelX) * vb.s > 15 || f.n % 12 === 0) {
+      const a = f.curve[0].x <= f.curve[f.curve.length - 1].x ? f.curve[0] : f.curve[f.curve.length - 1];
+      if (lastLabelX === null || Math.abs(a.y - lastLabelX) * vb.s > 15 || f.n % 12 === 0) {
         text(gf, a.y, a.x - 5 * k - 3, String(f.n), { class: 'fret-num' + (f.n % 12 === 0 ? ' octave' : ''), 'text-anchor': 'middle' });
         lastLabelX = a.y;
       }
@@ -132,9 +165,12 @@ export function createBlueprint(container, { onHover } = {}) {
       el('line', { x1: s.nut.y + ny * 3, y1: s.nut.x + nx * 3, x2: a.y + ny * 3, y2: a.x + nx * 3, class: 'ext' }, gd);
       el('line', { x1: s.bridge.y + ny * 3, y1: s.bridge.x + nx * 3, x2: b.y + ny * 3, y2: b.x + nx * 3, class: 'ext' }, gd);
       el('line', { x1: a.y, y1: a.x, x2: b.y, y2: b.x, class: 'dim', 'marker-start': 'url(#bpArrow)', 'marker-end': 'url(#bpArrow)' }, gd);
-      const mx = (a.y + b.y) / 2, my = (a.x + b.x) / 2, ang = Math.atan2(b.x - a.x, b.y - a.y) * 180 / Math.PI;
-      const t = text(gd, mx, my - 3 * k * side * -1, label, { class: 'dim-label', 'text-anchor': 'middle', 'dominant-baseline': side < 0 ? 'auto' : 'hanging', transform: `rotate(${ang} ${mx} ${my})` });
-      t.setAttribute('y', my + (side < 0 ? -4 * k : 4 * k));
+      const mx = (a.y + b.y) / 2, my = (a.x + b.x) / 2;
+      let ang = Math.atan2(b.x - a.x, b.y - a.y) * 180 / Math.PI;
+      if (ang > 90) ang -= 180; else if (ang < -90) ang += 180;   // always read left to right
+      const out = my > (xmin + xmax) / 2 ? 1 : -1;               // label on the side away from the board
+      const t = text(gd, mx, my, label, { class: 'dim-label', 'text-anchor': 'middle', 'dominant-baseline': out < 0 ? 'auto' : 'hanging', transform: `rotate(${ang} ${mx} ${my})` });
+      t.setAttribute('y', my + out * 4 * k);
     };
     const s0 = d.strings[0], sN = d.strings[N - 1];
     dimAlong(s0, -1, `${N > 1 ? 'TREBLE  ' : 'SCALE  '}${fmtLen(s0.scale, units)}`);
@@ -148,8 +184,8 @@ export function createBlueprint(container, { onHover } = {}) {
       const my = (a.x + b.x) / 2;
       text(gd, X + side * 4 * k, my, label, { class: 'dim-label', 'text-anchor': 'middle', transform: `rotate(-90 ${X + side * 4 * k} ${my})`, 'dominant-baseline': side < 0 ? 'auto' : 'hanging' });
     };
-    dimAcross(d.nut.curve, -1, `NUT  ${fmtLen(d.widths.nut, units)}`);
-    dimAcross(d.bridge.curve, 1, `BRIDGE  ${fmtLen(d.widths.bridge, units)}`);
+    dimAcross(d.nut.curve, -SG, `NUT  ${fmtLen(d.widths.nut, units)}`);
+    dimAcross(d.bridge.curve, SG, `BRIDGE  ${fmtLen(d.widths.bridge, units)}`);
 
     // hover: nearest fret to the pointer (within ~14 px)
     draw.k = k;
@@ -161,6 +197,7 @@ export function createBlueprint(container, { onHover } = {}) {
       <div class="tb-row"><span class="tb-k">MODE</span><span class="tb-v">${(d.params.mode || '').toUpperCase()}</span></div>
       <div class="tb-row"><span class="tb-k">SCALE</span><span class="tb-v">${fmtLen(sr[0], units)} – ${fmtLen(sr[1], units)}</span></div>
       <div class="tb-row"><span class="tb-k">KEY</span><span class="tb-v"><i class="lg sn"></i>nut side <i class="lg sp"></i>bridge side <i class="lg in"></i>inflection</span></div>
+      <div class="tb-row"><span class="tb-k">VIEW</span><span class="tb-v">${flip ? 'TOP 180° · nut right' : 'TOP · nut left'}</span></div>
       <div class="tb-row"><span class="tb-k">GRID</span><span class="tb-v">${minor} mm · ${major} mm</span></div>`;
     if (hoverN) setHover(hoverN);
   }
@@ -198,11 +235,11 @@ export function createBlueprint(container, { onHover } = {}) {
   }
 
   svg.addEventListener('pointermove', e => {
-    if (drag || !design) return;
+    if (drag || !vd) return;
     const m = svg.getScreenCTM(); if (!m) return;
     const pt = new DOMPoint(e.clientX, e.clientY).matrixTransform(m.inverse()); // X = design y, Y = design x
     let best = null, bd = Infinity;
-    for (const f of design.frets) {
+    for (const f of vd.frets) {
       const c = f.curve;
       for (let i = 0; i < c.length; i += 1) { const dx = c[i].y - pt.x, dy = c[i].x - pt.y, dd = dx * dx + dy * dy; if (dd < bd) { bd = dd; best = f.n; } }
     }
@@ -231,9 +268,10 @@ export function createBlueprint(container, { onHover } = {}) {
   new ResizeObserver(() => draw()).observe(container);
 
   return {
-    update(d, u, { refit = false } = {}) { const nChanged = !design || design.strings.length !== d.strings.length; design = d; units = u; if (refit || nChanged || !fit) { fit = computeFit(); } else { const nf = computeFit(); fit = nf; } draw(); },
-    setInsets(i) { insets = { ...insets, ...i }; container.style.setProperty('--bp-right', insets.right + 'px'); container.style.setProperty('--bp-bottom', insets.bottom + 'px'); container.style.setProperty('--bp-top', insets.top + 'px'); draw(); },
+    update(d, u) { design = d; vd = flip ? rotateDesign(d) : d; units = u; fit = computeFit(); draw(); },
+    setInsets(i) { insets = { ...insets, ...i }; container.style.setProperty('--bp-left', insets.left + 'px'); container.style.setProperty('--bp-right', insets.right + 'px'); container.style.setProperty('--bp-bottom', insets.bottom + 'px'); container.style.setProperty('--bp-top', insets.top + 'px'); draw(); },
     resetView() { zoom = 1; pan = { x: 0, y: 0 }; draw(); },
     redraw: draw,
+    setFlip, get flipped() { return flip; },
   };
 }
