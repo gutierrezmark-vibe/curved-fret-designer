@@ -384,19 +384,29 @@ const ICONS = {
   hero: '<svg viewBox="0 0 20 20"><path d="M3 15L12 4l5 3-8 11z"/><path d="M6 12l5 2M8 9.5l5 2"/></svg>',
   player: '<svg viewBox="0 0 20 20"><circle cx="10" cy="7" r="2.6"/><path d="M4 17c1.2-3.4 3.4-5 6-5s4.8 1.6 6 5"/></svg>',
   top: '<svg viewBox="0 0 20 20"><rect x="2.5" y="6" width="15" height="8" rx="1.5"/><path d="M6 6v8M9.5 6v8M13 6v8"/></svg>',
+  back: '<svg viewBox="0 0 20 20"><rect x="2.5" y="6" width="15" height="8" rx="1.5"/><path d="M5.5 10h9" stroke-dasharray="1.6 1.4"/><path d="M10 2.5v2.2M10 15.3v2.2"/></svg>',
+  rotL: '<svg viewBox="0 0 20 20"><path d="M4.5 10a5.5 5.5 0 105.5-5.5H7"/><path d="M8.6 2.4L6.4 4.5l2.2 2.1"/></svg>',
+  rotR: '<svg viewBox="0 0 20 20"><path d="M15.5 10A5.5 5.5 0 1110 4.5h3"/><path d="M11.4 2.4l2.2 2.1-2.2 2.1"/></svg>',
   macro: '<svg viewBox="0 0 20 20"><circle cx="8.5" cy="8.5" r="5"/><path d="M12.2 12.2L17 17M6 9.8c1-2.4 2.6-3 4.6-2.6"/></svg>',
   bridge: '<svg viewBox="0 0 20 20"><path d="M3 13h14M5 13V9.5h2V13M9 13V9.5h2V13M13 13V9.5h2V13M3 16h14"/></svg>',
   strings: '<svg viewBox="0 0 20 20"><path d="M3 5h14M3 8.5h14M3 12h14M3 15.5h14"/></svg>',
   insight: '<svg viewBox="0 0 20 20"><path d="M3 10h14" stroke-dasharray="2 2"/><path d="M7 3c3 3.5 3 10.5 0 14M13 3c-3 3.5-3 10.5 0 14"/><circle cx="10" cy="10" r="1.3"/></svg>',
   spin: '<svg viewBox="0 0 20 20"><path d="M16 10a6 6 0 11-2-4.5"/><path d="M14.5 2.5v3.3h-3.3"/></svg>',
 };
-const CAMS = [['hero', 'Hero'], ['player', 'Player'], ['top', 'Top'], ['macro', 'Macro'], ['bridge', 'Bridge']];
+const CAMS = [['hero', 'Hero'], ['player', 'Player'], ['top', 'Top'], ['back', 'Back'], ['macro', 'Macro'], ['bridge', 'Bridge']];
 function buildDock() {
   const cb = $('camBtns');
   CAMS.forEach(([id, label], k) => {
     const b = h('button', 'dbtn', `${ICONS[id]}<span class="lbl">${label}</span>`); b.type = 'button'; b.dataset.cam = id; b.title = `${label} view  (${k + 1})`;
     b.onclick = () => setCam(id); cb.appendChild(b);
   });
+  // Turn about the instrument's long axis in 45° steps (Top = 0°, Back = 180°).
+  const rot = h('div', 'rot-group');
+  const rl = h('button', 'dbtn rot', `${ICONS.rotL}`); rl.type = 'button'; rl.title = 'Turn 45° about the neck  ([)'; rl.setAttribute('aria-label', 'Turn the view 45 degrees one way');
+  const rr = h('button', 'dbtn rot', `${ICONS.rotR}`); rr.type = 'button'; rr.title = 'Turn 45° about the neck  (])'; rr.setAttribute('aria-label', 'Turn the view 45 degrees the other way');
+  const ra = h('span', 'rot-angle', '0°'); ra.id = 'rotAngle'; ra.title = 'Angle about the neck: 0° is Top, 180° is Back';
+  rl.onclick = () => rollCam(-45); rr.onclick = () => rollCam(45);
+  rot.append(rl, ra, rr); cb.appendChild(rot);
   const fs = $('fretSwatches');
   [['nickel', 'Nickel silver', 'linear-gradient(135deg,#fff7e8,#cdb894 55%,#8d7a5c)'], ['stainless', 'Stainless steel', 'linear-gradient(135deg,#ffffff,#c4ccd6 55%,#7c8794)'], ['gold', 'EVO gold', 'linear-gradient(135deg,#fff0c8,#d9b064 55%,#8e6a2c)']].forEach(([id, label, bg]) => {
     const b = h('button', 'swatch'); b.style.background = bg; b.title = `Frets: ${label}`; b.dataset.fret = id; b.setAttribute('aria-label', `Fret wire ${label}`);
@@ -437,8 +447,17 @@ function refreshDock() {
   document.querySelector('[data-t="spin"]')?.classList.toggle('on', S.spin);
   document.querySelector('[data-t="overlay"]')?.classList.toggle('on', S.overlay);
 }
+function rollCam(deg) {
+  if (!R3?.rotate) return;
+  if (S.view === 'blueprint') setView('split');
+  if (S.spin) { S.spin = false; R3.setAutoRotate(false); }
+  const ang = R3.rotate(deg);
+  S.cam = ang === 0 ? 'top' : ang === 180 ? 'back' : 'roll'; refreshDock();
+  const el = $('rotAngle'); if (el) el.textContent = `${ang}°`;
+}
 function setCam(id) {
   S.cam = id; refreshDock();
+  { const el = $('rotAngle'); if (el) el.textContent = id === 'top' ? '0°' : id === 'back' ? '180°' : '–'; }
   if (S.view === 'blueprint') setView('split');
   R3?.view(id);
   if (S.spin) { S.spin = false; R3?.setAutoRotate(false); refreshDock(); }
@@ -506,10 +525,11 @@ window.addEventListener('resize', () => { clearTimeout(tResize); tResize = setTi
 
 // keyboard
 document.addEventListener('keydown', e => {
-  if (e.target.closest('input, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (e.target.closest?.('input, textarea') || e.metaKey || e.ctrlKey || e.altKey) return;
   const k = e.key.toLowerCase();
   if (S.view === 'paper' && k !== 'v') return; // reading: leave the keys to the page
-  if (k >= '1' && k <= '5') setCam(CAMS[+k - 1][0]);
+  if (k >= '1' && k <= String(CAMS.length)) setCam(CAMS[+k - 1][0]);
+  if (k === '[' || k === ']') rollCam(k === '[' ? -45 : 45);
   else if (k === 'v') setView({ '3d': 'split', split: 'blueprint', blueprint: '3d', paper: '3d' }[S.view]);
   else if (k === 'u') setParam('units', S.params.units === 'in' ? 'mm' : 'in');
   else if (k === 's') document.querySelector('[data-t="strings"]').click();

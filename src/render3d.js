@@ -337,7 +337,7 @@ export function create3D(canvas, { onStats } = {}) {
   camera.position.set(-500, 600, 900);
   const controls = new OrbitControls(camera, canvas);
   Object.assign(controls, { enableDamping: true, dampingFactor: 0.075, rotateSpeed: 0.55, zoomSpeed: 0.9, panSpeed: 0.8,
-    screenSpacePanning: true, minDistance: 25, maxDistance: 8000, maxPolarAngle: Math.PI * 0.97, autoRotateSpeed: 0.35 });
+    screenSpacePanning: true, minDistance: 25, maxDistance: 8000, maxPolarAngle: Math.PI, autoRotateSpeed: 0.35 });
 
   // Lights: warm key from upper left front (casts the fret/string shadows),
   // cool rim from behind, very low fill. Intensities are illuminance-like:
@@ -348,7 +348,10 @@ export function create3D(canvas, { onStats } = {}) {
   key.shadow.bias = -0.00015; key.shadow.normalBias = 0.04;
   const rim = new THREE.DirectionalLight(0xbcd5ff, 1.5);
   const fill = new THREE.HemisphereLight(0x9fb4cc, 0x0b0a09, 0.16);
-  scene.add(key, key.target, rim, rim.target, fill);
+  // Under fill: off from normal views; fades in only when the camera drops below
+  // the instrument (Back view, 45° turns) so the underside isn't a black silhouette.
+  const under = new THREE.DirectionalLight(0xd9e2ee, 0);
+  scene.add(key, key.target, rim, rim.target, fill, under, under.target);
   const KEY_DIR = new THREE.Vector3(-0.42, 1, 0.3).normalize();
   const RIM_DIR = new THREE.Vector3(0.75, 0.42, -0.6).normalize();
 
@@ -735,6 +738,8 @@ export function create3D(canvas, { onStats } = {}) {
     hero: { dir: [0.32, 0.5, -0.8], fill: 0.8 },
     player: { dir: [0.62, 0.78, 0.04], fill: 0.86 },
     top: { dir: [0.0015, 1, 0], fill: 0.9, board: false },
+    // Back: the top view turned 180° about the instrument's long axis (underside up).
+    back: { dir: [0.0015, -1, 0], fill: 0.9, board: false },
     macro: { dir: [0.16, 0.16, 1], fixed: 0.42 },
     bridge: { dir: [0.46, 0.5, 0.74], fixed: 0 },
   };
@@ -795,6 +800,22 @@ export function create3D(canvas, { onStats } = {}) {
     fly = { t0: performance.now(), dur, fromPos: camera.position.clone(), fromT: controls.target.clone(), to };
     controls.enabled = false;
   }
+  // Turn the camera about the instrument's long axis (world Z) to the next
+  // multiple of `deg` degrees, measured from straight above (Top = 0°, Back = 180°).
+  // Elevation along the neck is kept, so from Hero it turns the instrument over.
+  function rollView(deg = 45) {
+    if (!frame) return 0;
+    const cur = (fly ? fly.to.pos.clone().sub(fly.to.target) : camera.position.clone().sub(controls.target)).normalize();
+    const a = Math.atan2(cur.x, cur.y), step = THREE.MathUtils.degToRad(Math.abs(deg)), eps = 0.01;
+    const k = deg > 0 ? Math.floor(a / step + eps + 1) : Math.ceil(a / step - eps - 1);
+    const next = k * step, rxy = Math.max(Math.hypot(cur.x, cur.y), 0.2);
+    const dir = new THREE.Vector3(Math.sin(next) * rxy, Math.cos(next) * rxy, Math.abs(cur.z) > 0.98 ? 0 : cur.z);
+    // Never sit exactly on a pole: keep the same tiny sideways nudge the Top view uses.
+    if (Math.abs(dir.y) > 0.999 * dir.length()) dir.x = 0.0015 * dir.length();
+    VIEWS.roll = { dir: dir.normalize().toArray(), fill: 0.88, board: false };
+    flyTo('roll', { dur: 900 });
+    return ((Math.round(THREE.MathUtils.radToDeg(next)) % 360) + 360) % 360;
+  }
   const _s0 = new THREE.Spherical(), _s1 = new THREE.Spherical();
   function stepFly(now) {
     if (!fly) return false;
@@ -848,7 +869,19 @@ export function create3D(canvas, { onStats } = {}) {
     post.dof.enabled = on;
     if (on) post.dof.uniforms.focus.value = camera.position.distanceTo(controls.target);
   }
+  const _ud = new THREE.Vector3();
+  function updateUnderFill() {
+    _ud.copy(camera.position).sub(controls.target);
+    const len = _ud.length() || 1, below = clamp(-_ud.y / len, 0, 1);
+    under.intensity = 2.2 * below;
+    if (below > 0) {
+      _ud.multiplyScalar(1 / len); _ud.x += 0.25; _ud.normalize();
+      under.position.copy(controls.target).addScaledVector(_ud, 1000);
+      under.target.position.copy(controls.target); under.target.updateMatrixWorld();
+    }
+  }
   function draw() {
+    updateUnderFill();
     if (contactDirty) { contact.render(scene, noAO.slice(1)); contactDirty = false; }
     updateDoF();
     if (quality >= 1) post.render(); else renderer.render(scene, camera);
@@ -928,6 +961,7 @@ export function create3D(canvas, { onStats } = {}) {
     setAutoRotate(on) { autoRotate = on; controls.autoRotate = on; dirty = true; },
     get autoRotate() { return autoRotate; },
     view: flyTo,
+    rotate: rollView,
     get currentView() { return currentView; },
     reframe() { if (frame) flyTo(currentView, { dur: 700 }); },
     setInsets(i) { insets = { ...insets, ...i }; applyViewOffset(); camera.updateProjectionMatrix(); dirty = true; },
@@ -942,7 +976,7 @@ export function create3D(canvas, { onStats } = {}) {
     get _views() { return VIEWS; },
     get _post() { return post; },
     get _mats() { return mats; },
-    _lights: { key, rim, fill },
+    _lights: { key, rim, fill, under },
     // Render synchronously and copy the frame (preserveDrawingBuffer is off).
     snapshot(region = [0, 0, 1, 1]) {
       draw();
