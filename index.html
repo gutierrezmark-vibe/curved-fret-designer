@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Curved Fret Designer</title>
+  <meta name="description" content="Design exponential, divergent, convergent and S-curve fretboards where every string has its own scale length. Photoreal 3D preview, blueprint and 1:1 templates.">
+  <meta name="theme-color" content="#08090b">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%230b0d10'/%3E%3Cpath d='M9 5c4 6 4 16 0 22M16 5c3 6 3 16 0 22M23 5c2 6 2 16 0 22' fill='none' stroke='%239fdcff' stroke-width='1.8' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter+Tight:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="src/styles.css">
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+<div id="app" data-view="3d" data-sheet="design">
+  <main id="stage" aria-label="Preview">
+    <div id="pane3d" class="pane"><canvas id="gl"></canvas><div id="glFallback" class="gl-fallback" hidden>3D preview needs WebGL 2. The blueprint and all exports still work.</div></div>
+    <div id="paneBp" class="pane"></div>
+    <div class="stage-grain" aria-hidden="true"></div>
+  </main>
+
+  <header class="topbar glass reveal" style="--d:0">
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M9 5c4 6 4 16 0 22M16 5c3 6 3 16 0 22M23 5c2 6 2 16 0 22"/></svg>
+      <div class="brand-text"><span class="brand-name">Curved Fret Designer</span><span class="brand-sub">multiscale lab</span></div>
+    </div>
+    <div class="top-center" id="viewSeg"></div>
+    <div class="top-actions">
+      <div class="menu-wrap">
+        <button class="btn ghost" id="presetBtn" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 16 16"><path d="M3 4h10M3 8h10M3 12h6"/></svg><span>Presets</span></button>
+        <div class="menu glass" id="presetMenu" role="menu" hidden></div>
+      </div>
+      <div class="menu-wrap">
+        <button class="btn ghost" id="importBtn" aria-haspopup="true" aria-expanded="false"><svg viewBox="0 0 16 16"><path d="M8 2v8M4.5 6.5L8 10l3.5-3.5M3 13h10"/></svg><span>Import</span></button>
+        <div class="menu glass import-pop" id="importPop" hidden>
+          <div class="menu-title">Import a FretFind2D link</div>
+          <input type="url" id="importUrl" placeholder="https://acspike.github.io/FretFind2D/src/fretfind.html#…" spellcheck="false">
+          <div class="pop-row"><span class="pop-note" id="importNote">Paste the share link from FretFind2D.</span><button class="btn accent sm" id="importGo">Import</button></div>
+        </div>
+      </div>
+      <div id="unitSeg"></div>
+      <button class="btn accent" id="shareBtn" title="Copy a link to this exact design"><svg viewBox="0 0 16 16"><path d="M6.5 9.5l3-3M5 7L3.8 8.2a2.6 2.6 0 003.7 3.7L8.7 10.7M11 9l1.2-1.2a2.6 2.6 0 00-3.7-3.7L7.3 5.3"/></svg><span>Share</span></button>
+    </div>
+  </header>
+
+  <aside class="panel left glass reveal" id="panelDesign" style="--d:1" aria-label="Design controls">
+    <div class="panel-scroll">
+      <section class="sec">
+        <div class="sec-h"><span>Scale model</span><span class="sec-aside" id="modeHint"></span></div>
+        <div class="modes" id="modes" role="radiogroup" aria-label="Scale model"></div>
+        <div id="modeParams" class="params"></div>
+        <div id="solved" class="solved"></div>
+      </section>
+      <section class="sec">
+        <div class="sec-h"><span>Layout</span></div>
+        <div id="layoutParams" class="params"></div>
+      </section>
+    </div>
+  </aside>
+
+  <aside class="panel right glass reveal" id="panelData" style="--d:2" aria-label="Live data">
+    <div class="panel-scroll">
+      <section class="sec">
+        <div class="sec-h"><span>Scale profile</span><span class="sec-aside" id="profileKind"></span></div>
+        <div id="profile" class="profile"></div>
+      </section>
+      <section class="sec">
+        <div class="metrics" id="metrics"></div>
+        <div id="warnBadges" class="warn-badges"></div>
+      </section>
+      <section class="sec">
+        <div class="sec-h"><span>Strings</span><span class="sec-aside" id="stringsAside"></span></div>
+        <div class="table-wrap"><table class="strings" id="stringTable"></table></div>
+      </section>
+    </div>
+  </aside>
+
+  <nav class="dock glass reveal" id="dock" style="--d:3" aria-label="View and export">
+    <div class="dock-group" id="camBtns"></div>
+    <div class="dock-sep"></div>
+    <div class="dock-group swatches" id="fretSwatches" title="Fret wire"></div>
+    <div class="dock-group swatches" id="woodSwatches" title="Fretboard wood"></div>
+    <div class="dock-sep"></div>
+    <div class="dock-group" id="toggles"></div>
+    <div class="dock-sep"></div>
+    <div class="dock-group" id="exportBtns"></div>
+  </nav>
+
+  <nav class="sheet-tabs glass" id="sheetTabs" aria-label="Panels">
+    <button data-sheet="design">Design</button><button data-sheet="data">Data</button><button data-sheet="view">View</button><button data-sheet="none" aria-label="Hide panels">⌄</button>
+  </nav>
+
+  <div id="toasts" aria-live="polite"></div>
+  <div class="loader" id="loader"><div class="loader-mark"><svg viewBox="0 0 32 32"><path d="M9 5c4 6 4 16 0 22M16 5c3 6 3 16 0 22M23 5c2 6 2 16 0 22"/></svg></div><div class="loader-t">Curving frets</div></div>
+</div>
+<script type="module" src="src/app.js"></script>
+</body>
+</html>
