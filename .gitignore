@@ -1,0 +1,21 @@
+# Mac system files
+.DS_Store
+
+# Mark's private reference material (kept local, never published)
+*.PNG
+*.png.orig
+*.numbers
+*.xlsx
+*.rtf
+reference/
+
+# Secrets
+.env
+.env.*
+
+# Dependencies / build output
+node_modules/
+dist/
+
+# Local Claude Code settings
+.claude/
