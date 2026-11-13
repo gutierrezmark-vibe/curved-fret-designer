@@ -282,7 +282,19 @@ function buildLayoutParams() {
   const r0 = h('div', 'row2'); host.appendChild(r0);
   add(numSlider('numStrings', 'Strings', 1, 24, 1, { kind: 'int', dp: 0, hardMin: 1, hardMax: 200, hint: 'No maximum: type any number.' }), r0);
   add(numSlider('numFrets', 'Frets', 0, 36, 1, { kind: 'int', dp: 0, hardMin: 0, hardMax: 60 }), r0);
-  add(numSlider('perpRatio', 'Perpendicular <small>0 nut · 1 bridge</small>', 0, 1, 0.01, { dp: 3, hardMin: 0, hardMax: 1, hint: '0.5 puts the straight fret at the octave.' }));
+  // Perpendicular as a FRET NUMBER (the engine still stores the 0..1 ratio):
+  // fret n sits at ratio 1 - 2^(-n/12). Drag snaps to whole frets; type a
+  // decimal (e.g. 8.5) to place the straight line between two frets.
+  const fretToRatio = n => (n <= 0 ? 0 : 1 - Math.pow(2, -n / 12));
+  add(createSlider({
+    label: 'Perpendicular fret <small>0 = nut · 12 = octave</small>', kind: 'num', units: U,
+    min: 0, max: Math.max(12, S.params.numFrets || 24), step: 1, snap: 1, hardMin: 0, hardMax: 60,
+    hint: 'The fret that stays straight (perpendicular to the centreline). Drag snaps to whole frets; Shift-drag or type a decimal such as 8.5 to place it between frets.',
+    fmt: v => !Number.isFinite(v) ? 'bridge' : Math.abs(v - Math.round(v)) < 0.005 ? String(Math.round(v)) : v.toFixed(2),
+    get: () => perpFret(S.params.perpRatio),
+    set: (n, f) => setParam('perpRatio', fretToRatio(n), { final: f }),
+    def: () => perpFret(G.DEFAULTS.perpRatio),
+  }));
   const r1 = h('div', 'row2'); host.appendChild(r1);
   add(lenSlider('nutSpacing', 'Nut spacing', 4, 16, { hint: 'Centre-to-centre between adjacent strings at the nut' }), r1);
   add(lenSlider('bridgeSpacing', 'Bridge spacing', 5, 22, { hint: 'Centre-to-centre between adjacent strings at the bridge' }), r1);

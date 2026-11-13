@@ -35,7 +35,7 @@ export function createSlider(o) {
     fill.style.width = (f * 100) + '%';
     thumb.style.left = (f * 100) + '%';
     thumb.setAttribute('aria-valuenow', v);
-    if (!editing) input.value = Number.isFinite(v) ? disp(v).toFixed(dp()) : '';
+    if (!editing) input.value = o.fmt ? o.fmt(v) : Number.isFinite(v) ? disp(v).toFixed(dp()) : '';
     unit.textContent = isLen ? unitLabel(U()) : (o.suffix || '');
   }
   function commit(v, final) { v = clampH(quant(v)); o.set(v, final); refresh(); }
@@ -47,7 +47,7 @@ export function createSlider(o) {
     e.preventDefault();
     const r = track.getBoundingClientRect();
     let v0 = o.get();
-    if (e.target !== thumb) { v0 = o.min + (o.max - o.min) * Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)); commit(v0, false); }
+    if (e.target !== thumb) { v0 = o.min + (o.max - o.min) * Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)); commit(o.snap ? Math.round(v0 / o.snap) * o.snap : v0, false); }
     drag = { x: e.clientX, v: o.get(), w: r.width, fine: e.shiftKey };
     track.setPointerCapture(e.pointerId); root.classList.add('active'); thumb.focus({ preventScroll: true });
   });
@@ -58,6 +58,7 @@ export function createSlider(o) {
     const scale = drag.fine ? 0.08 : 1;
     let v = drag.v + (e.clientX - drag.x) / drag.w * (o.max - o.min) * scale;
     v = Math.min(o.max, Math.max(o.min, v));
+    if (o.snap && !drag.fine) v = Math.round(v / o.snap) * o.snap;
     root.classList.toggle('fine', drag.fine);
     commit(v, false);
   });
@@ -85,7 +86,7 @@ export function createSlider(o) {
     else if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
       e.preventDefault();
       const st = (o.step || 1) * (e.shiftKey ? 10 : e.altKey ? 0.1 : 1) * (e.key === 'ArrowUp' ? 1 : -1);
-      commit(o.get() + st, true); input.value = disp(o.get()).toFixed(dp()); input.select();
+      commit(o.get() + st, true); input.value = o.fmt ? o.fmt(o.get()) : disp(o.get()).toFixed(dp()); input.select();
     }
   });
   refresh();
