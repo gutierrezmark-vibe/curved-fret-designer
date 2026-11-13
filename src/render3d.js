@@ -27,6 +27,11 @@ const FLOOR_Y = BODY_BOTTOM - 0.2;          // invisible studio floor (contact s
 const BARREL_LEN = 27;                      // tuner barrel length
 const INTRO_LIFT = 46;                      // the instrument settles onto the floor
 const FOV = 30;                             // long-lens look
+// Flat views (Top, Top 180°): an extreme telephoto from far away. At 0.2° the
+// depth of the whole instrument changes scale by under 0.03%, so the picture is
+// orthographic for all practical purposes while every pass (AO, bloom, contact
+// shadow, string-width shader) keeps working with the same perspective camera.
+const FLAT_FOV = 0.2;
 const EXPOSURE = 1.0;
 const INCH = 25.4;
 const MARKERS = [3, 5, 7, 9, 12, 15, 17, 19, 21, 24, 27, 29, 31, 33, 36];
@@ -737,7 +742,10 @@ export function create3D(canvas, { onStats } = {}) {
   const VIEWS = {
     hero: { dir: [0.32, 0.5, -0.8], fill: 0.8 },
     player: { dir: [0.62, 0.78, 0.04], fill: 0.86 },
-    top: { dir: [0.0015, 1, 0], fill: 0.9, board: false },
+    top: { dir: [0.0015, 1, 0], fill: 0.9, board: false, flat: true },
+    // Top 180°: the same flat plan view rotated half a turn in the screen plane
+    // (nut and treble edge swap sides).
+    top180: { dir: [-0.0015, 1, 0], fill: 0.9, board: false, flat: true },
     // Back: the top view turned 180° about the instrument's long axis (underside up).
     back: { dir: [0.0015, -1, 0], fill: 0.9, board: false },
     macro: { dir: [0.16, 0.16, 1], fixed: 0.42 },
@@ -746,12 +754,14 @@ export function create3D(canvas, { onStats } = {}) {
   const _r = new THREE.Vector3(), _up = new THREE.Vector3(), _f = new THREE.Vector3(), _c = new THREE.Vector3();
   // Fit a point cloud: find target + distance so the projected silhouette is
   // centred in the free viewport and fills `fill` of its limiting dimension.
-  function fitPose(dir, pts, fill) {
-    const fov = THREE.MathUtils.degToRad(camera.fov);
+  function fitPose(dir, pts, fill, fovDeg = FOV) {
+    const fov = THREE.MathUtils.degToRad(fovDeg);
     const tanV = Math.tan(fov / 2) * Math.max(0.2, (H - insets.top - insets.bottom) / H) * fill;
     const tanH = Math.tan(fov / 2) * camera.aspect * Math.max(0.2, (W - insets.left - insets.right) / W) * fill;
     _f.copy(dir).negate();
-    _up.set(0, 1, 0); if (Math.abs(_f.y) > 0.999) _up.set(0, 0, -1);
+    // Screen 'up' exactly as camera.lookAt() will choose it (world Y projected
+    // off the view direction), including the near-vertical plan views.
+    _up.set(0, 1, 0).addScaledVector(_f, -_f.y).normalize();
     _r.crossVectors(_f, _up).normalize(); _up.crossVectors(_r, _f);
     const target = new THREE.Vector3();
     for (const p of pts) target.add(p);
@@ -786,9 +796,9 @@ export function create3D(canvas, { onStats } = {}) {
       target = frame.bridge.clone();
       dist = Math.max(150, frame.bridgeW * 1.15 + 70);
     } else {
-      ({ target, dist } = fitPose(dir, v.board ? frame.boardPts : frame.pts, v.fill));
+      ({ target, dist } = fitPose(dir, v.board ? frame.boardPts : frame.pts, v.fill, v.flat ? FLAT_FOV : FOV));
     }
-    return { pos: target.clone().addScaledVector(dir, dist), target };
+    return { pos: target.clone().addScaledVector(dir, dist), target, fov: v.flat ? FLAT_FOV : FOV };
   }
   let fly = null, currentView = 'hero', pendingView = false;
   function flyTo(name, { instant = false, dur = 1400 } = {}) {
@@ -796,9 +806,18 @@ export function create3D(canvas, { onStats } = {}) {
     if (H < 40) { currentView = name; pendingView = true; return; }
     currentView = name;
     const to = viewPose(name);
-    if (instant) { camera.position.copy(to.pos); controls.target.copy(to.target); controls.update(); dirty = true; return; }
-    fly = { t0: performance.now(), dur, fromPos: camera.position.clone(), fromT: controls.target.clone(), to };
+    controls.maxDistance = Math.max(MAX_DIST_FOR(camera.fov), MAX_DIST_FOR(to.fov));
+    if (instant) { setFov(to.fov); camera.position.copy(to.pos); controls.target.copy(to.target); controls.update(); dirty = true; return; }
+    fly = { t0: performance.now(), dur, fromPos: camera.position.clone(), fromT: controls.target.clone(), fromFov: camera.fov, to };
     controls.enabled = false;
+  }
+  function MAX_DIST_FOR(fovDeg) { return fovDeg < 1 ? 5e6 : 8000; }
+  function updatePxPerUnit() {
+    stringUniforms.uPxPerUnit.value = (H * renderer.getPixelRatio() / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+  }
+  function setFov(f) {
+    if (camera.fov === f) return;
+    camera.fov = f; camera.updateProjectionMatrix(); updatePxPerUnit(); dirty = true;
   }
   // Turn the camera about the instrument's long axis (world Z) to the next
   // multiple of `deg` degrees, measured from straight above (Top = 0°, Back = 180°).
@@ -812,7 +831,8 @@ export function create3D(canvas, { onStats } = {}) {
     const dir = new THREE.Vector3(Math.sin(next) * rxy, Math.cos(next) * rxy, Math.abs(cur.z) > 0.98 ? 0 : cur.z);
     // Never sit exactly on a pole: keep the same tiny sideways nudge the Top view uses.
     if (Math.abs(dir.y) > 0.999 * dir.length()) dir.x = 0.0015 * dir.length();
-    VIEWS.roll = { dir: dir.normalize().toArray(), fill: 0.88, board: false };
+    const flatNow = (fly ? fly.to.fov ?? FOV : camera.fov) < 1;
+    VIEWS.roll = { dir: dir.normalize().toArray(), fill: 0.88, board: false, flat: flatNow };
     flyTo('roll', { dur: 900 });
     return ((Math.round(THREE.MathUtils.radToDeg(next)) % 360) + 360) % 360;
   }
@@ -830,7 +850,11 @@ export function create3D(canvas, { onStats } = {}) {
     camera.position.copy(tgt).add(new THREE.Vector3().setFromSpherical(sp));
     controls.target.copy(tgt);
     camera.lookAt(tgt);
-    if (k >= 1) { fly = null; controls.enabled = true; controls.update(); }
+    // Lens and distance change together (log space), so the framing holds while
+    // the view flattens into (or out of) the orthographic-like flat views.
+    const f0 = fly.fromFov ?? camera.fov, f1 = fly.to.fov ?? FOV;
+    if (f0 !== f1) setFov(Math.exp(Math.log(f0) + (Math.log(f1) - Math.log(f0)) * e));
+    if (k >= 1) { fly = null; setFov(f1); controls.maxDistance = MAX_DIST_FOR(f1); controls.enabled = true; controls.update(); }
     return true;
   }
 
@@ -869,7 +893,7 @@ export function create3D(canvas, { onStats } = {}) {
     post.dof.enabled = on;
     if (on) post.dof.uniforms.focus.value = camera.position.distanceTo(controls.target);
   }
-  const _ud = new THREE.Vector3();
+  const _ud = new THREE.Vector3(), _szv = new THREE.Vector3();
   function updateUnderFill() {
     _ud.copy(camera.position).sub(controls.target);
     const len = _ud.length() || 1, below = clamp(-_ud.y / len, 0, 1);
@@ -899,7 +923,9 @@ export function create3D(canvas, { onStats } = {}) {
     if (autoRotate) active = true;
     if (!active && !dirty) { lastT = now; return; }
     const dist = camera.position.distanceTo(controls.target);
-    camera.near = clamp(dist / 300, 0.2, 20); camera.far = dist * 40 + 5000; camera.updateProjectionMatrix();
+    // Near plane hugs the instrument when the camera is far away (flat views) to keep depth precision.
+    const R = frame ? frame.full.getSize(_szv).length() : 2000;
+    camera.near = Math.max(clamp(dist / 300, 0.2, 20), dist - 3 * R); camera.far = dist * 40 + 5000; camera.updateProjectionMatrix();
     draw();
     dirty = false;
     // adaptive quality: watch frame time while animating. Drops GTAO first,
@@ -937,7 +963,7 @@ export function create3D(canvas, { onStats } = {}) {
     const dpr = Math.max(0.75, Math.min(window.devicePixelRatio || 1, dprCap, Math.sqrt(budget / (W * H))));
     renderer.setPixelRatio(dpr);
     renderer.setSize(W, H, false);
-    stringUniforms.uPxPerUnit.value = (H * renderer.getPixelRatio() / 2) / Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2);
+    updatePxPerUnit();
     post.setSize(W, H, renderer.getPixelRatio());
     camera.aspect = W / H;
     applyViewOffset();

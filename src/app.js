@@ -384,6 +384,7 @@ const ICONS = {
   hero: '<svg viewBox="0 0 20 20"><path d="M3 15L12 4l5 3-8 11z"/><path d="M6 12l5 2M8 9.5l5 2"/></svg>',
   player: '<svg viewBox="0 0 20 20"><circle cx="10" cy="7" r="2.6"/><path d="M4 17c1.2-3.4 3.4-5 6-5s4.8 1.6 6 5"/></svg>',
   top: '<svg viewBox="0 0 20 20"><rect x="2.5" y="6" width="15" height="8" rx="1.5"/><path d="M6 6v8M9.5 6v8M13 6v8"/></svg>',
+  top180: '<svg viewBox="0 0 20 20"><rect x="2.5" y="6" width="15" height="8" rx="1.5"/><path d="M7 6v8M10.5 6v8M14 6v8"/><path d="M4.2 4.2a7 7 0 0111.6 0M15.8 4.2l.3-2M15.8 4.2l-2 .2"/></svg>',
   back: '<svg viewBox="0 0 20 20"><rect x="2.5" y="6" width="15" height="8" rx="1.5"/><path d="M5.5 10h9" stroke-dasharray="1.6 1.4"/><path d="M10 2.5v2.2M10 15.3v2.2"/></svg>',
   rotL: '<svg viewBox="0 0 20 20"><path d="M4.5 10a5.5 5.5 0 105.5-5.5H7"/><path d="M8.6 2.4L6.4 4.5l2.2 2.1"/></svg>',
   rotR: '<svg viewBox="0 0 20 20"><path d="M15.5 10A5.5 5.5 0 1110 4.5h3"/><path d="M11.4 2.4l2.2 2.1-2.2 2.1"/></svg>',
@@ -393,7 +394,7 @@ const ICONS = {
   insight: '<svg viewBox="0 0 20 20"><path d="M3 10h14" stroke-dasharray="2 2"/><path d="M7 3c3 3.5 3 10.5 0 14M13 3c-3 3.5-3 10.5 0 14"/><circle cx="10" cy="10" r="1.3"/></svg>',
   spin: '<svg viewBox="0 0 20 20"><path d="M16 10a6 6 0 11-2-4.5"/><path d="M14.5 2.5v3.3h-3.3"/></svg>',
 };
-const CAMS = [['hero', 'Hero'], ['player', 'Player'], ['top', 'Top'], ['back', 'Back'], ['macro', 'Macro'], ['bridge', 'Bridge']];
+const CAMS = [['hero', 'Hero'], ['player', 'Player'], ['top', 'Top'], ['top180', 'Top 180°'], ['back', 'Back'], ['macro', 'Macro'], ['bridge', 'Bridge']];
 function buildDock() {
   const cb = $('camBtns');
   CAMS.forEach(([id, label], k) => {
@@ -457,7 +458,7 @@ function rollCam(deg) {
 }
 function setCam(id) {
   S.cam = id; refreshDock();
-  { const el = $('rotAngle'); if (el) el.textContent = id === 'top' ? '0°' : id === 'back' ? '180°' : '–'; }
+  { const el = $('rotAngle'); if (el) el.textContent = (id === 'top' || id === 'top180') ? '0°' : id === 'back' ? '180°' : '–'; }
   if (S.view === 'blueprint') setView('split');
   R3?.view(id);
   if (S.spin) { S.spin = false; R3?.setAutoRotate(false); refreshDock(); }
