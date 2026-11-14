@@ -306,13 +306,33 @@ html.paper-mode #app[data-view="paper"] .paper-progress { opacity: 1; }
 }
 
 /* -------------------------------------------------------------- print ---- */
+/* ------------------------------------------------- paper switcher ------ */
+.paper-docs { display: inline-flex; padding: 3px; gap: 2px; border-radius: 10px; background: rgba(0, 0, 0, .3); border: 1px solid var(--p-rule); margin-bottom: 22px; font-family: var(--ui); }
+.paper-docs button { border: 0; background: none; color: var(--p-muted); font-size: 12px; height: 28px; padding: 0 14px; border-radius: 7px; letter-spacing: .01em; }
+.paper-docs button:hover { color: var(--p-ink); }
+.paper-docs button.on { color: var(--p-strong); background: linear-gradient(180deg, rgba(159, 220, 255, .16), rgba(159, 220, 255, .05)); box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 0 0 1px rgba(159, 220, 255, .22); }
+.paper-docs button:focus-visible { outline: 1.5px solid var(--accent); outline-offset: 2px; }
+
+/* ------------------------------------------------ tempered figures ----- */
+.tt .tt-bar.m3good { fill: var(--fg-e); } .tt .tt-bar.m3bad { fill: var(--fg-c); } .tt .tt-bar.p5 { fill: var(--fg-b); opacity: .75; }
+.tt .tt-et { stroke: var(--fg-perp); stroke-width: 1.2; stroke-dasharray: 5 4; } .tt .tt-et.p5 { stroke: var(--fg-axis); }
+.tt .tt-et-t { font-family: var(--mono); font-size: 9.5px; fill: var(--fg-perp); }
+.tt .tt-line { fill: none; stroke-width: 1.8; stroke-linejoin: round; stroke-linecap: round; }
+.tt .tt-lab { font-family: var(--mono); font-size: 9.5px; }
+.tt .tt-s1 { stroke: var(--fg-a); fill: var(--fg-a); } .tt .tt-s2 { stroke: var(--fg-b); fill: var(--fg-b); } .tt .tt-s3 { stroke: var(--fg-e); fill: var(--fg-e); }
+.tt .tt-s4 { stroke: var(--fg-d); fill: var(--fg-d); } .tt .tt-s5 { stroke: var(--fg-c); fill: var(--fg-c); } .tt .tt-s6 { stroke: var(--fg-perp); fill: var(--fg-perp); }
+.tt .tt-line.tt-s1, .tt .tt-line.tt-s2, .tt .tt-line.tt-s3, .tt .tt-line.tt-s4, .tt .tt-line.tt-s5, .tt .tt-line.tt-s6 { fill: none; }
+.lg.tt-lg-good { background: var(--fg-e); height: 8px; } .lg.tt-lg-bad { background: var(--fg-c); height: 8px; } .lg.tt-lg-p5 { background: var(--fg-b); height: 8px; }
+.lg.tt-lg-et { background: repeating-linear-gradient(90deg, var(--fg-perp) 0 4px, transparent 4px 7px); }
+.ptable.live td.good { color: var(--fg-e); }
+
 @media print {
   @page { size: auto; margin: 16mm 15mm 18mm; }
   html.paper-mode, html.paper-mode body { height: auto !important; overflow: visible !important; background: #fff !important; color: #111 !important; }
   html.paper-mode #app { position: static !important; overflow: visible !important; inset: auto !important; }
   html.paper-mode #stage, html.paper-mode .topbar, html.paper-mode .panel, html.paper-mode .dock, html.paper-mode .sheet-tabs,
   html.paper-mode #toasts, html.paper-mode .loader, html.paper-mode .paper-toc, html.paper-mode .paper-actions, html.paper-mode .fig-open,
-  html.paper-mode .fig-tools .fig-seg, html.paper-mode .live-chip, html.paper-mode .pc-foot, html.paper-mode .paper-progress, html.paper-mode .menu { display: none !important; }
+  html.paper-mode .fig-tools .fig-seg, html.paper-mode .live-chip, html.paper-mode .pc-foot, html.paper-mode .paper-progress, html.paper-mode .menu, html.paper-mode .paper-docs { display: none !important; }
   html.paper-mode .paper-pane {
     position: static !important; overflow: visible !important; opacity: 1 !important; visibility: visible !important; height: auto !important; background: #fff !important;
     --p-ink: #1d2126; --p-strong: #0b0d10; --p-muted: #555c66; --p-faint: #7a818b; --p-rule: #e2e5e9; --p-rule2: #cfd4da; --p-card: #fff; --p-accent: #0b5f8f;

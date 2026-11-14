@@ -145,7 +145,8 @@ export function createBlueprint(container, { onHover } = {}) {
     });
     // inflection points: where each S-curve fret changes direction
     const gi = g('infl');
-    d.frets.forEach(f => (f.inflectionPoints || []).forEach(q => {
+    // (not on tempered frets: they step between every pair of strings by design)
+    if (d.params?.mode !== 'tempered') d.frets.forEach(f => (f.inflectionPoints || []).forEach(q => {
       el('circle', { cx: q.y, cy: q.x, r: 5 * k, class: 'infl-halo' }, gi);
       el('circle', { cx: q.y, cy: q.x, r: 2.2 * k, class: 'infl' }, gi);
     }));

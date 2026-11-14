@@ -9,6 +9,10 @@ const shapes = {
   convergent: (c) => t => (1 - (2 * t - 1) ** 2) * (c - 3) * 0.2,
   's-curve': (c) => t => Math.sin((t - 0.5) * Math.PI * 2) * (c - 3) * 0.13 + (t - 0.5) * (c - 17) * 0.14,
   custom: (c) => t => [0, 0.6, -0.4, 0.8, 0.2][Math.round(t * 4)] * (c - 2) * 0.12,
+  // Tempered: flat under each string, small smooth steps between them.
+  tempered: (c) => t => { const k = [0, 0.5, -0.7, 0.3], x = t * 3, i = Math.min(2, Math.floor(x)), u = x - i, a = 0.3;
+    const s = u <= a ? 0 : u >= 1 - a ? 1 : ((v) => v * v * (3 - 2 * v))((u - a) / (1 - 2 * a));
+    return (k[i] + (k[i + 1] - k[i]) * s) * (1 + (c % 3)) * 0.9; },
 };
 export function glyphSVG(mode) {
   const f = shapes[mode] || shapes.single;
@@ -16,7 +20,7 @@ export function glyphSVG(mode) {
   const frets = FRETS.map((c, k) => {
     const fn = f(c);
     const pts = [];
-    const steps = mode === 'custom' ? 4 : 16;
+    const steps = mode === 'custom' ? 4 : mode === 'tempered' ? 36 : 16;
     for (let i = 0; i <= steps; i++) { const t = i / steps; pts.push([c + fn(t) + 2, 2 + t * (H - 4)]); }
     const d = pts.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(2) + ' ' + p[1].toFixed(2)).join('');
     const nodes = mode === 'custom' ? pts.map(p => `<circle cx="${p[0].toFixed(2)}" cy="${p[1].toFixed(2)}" r="0.9" class="g-node"/>`).join('') : '';
@@ -32,4 +36,5 @@ export const MODES = [
   { id: 'convergent', label: 'Convergent', hint: 'C-scale: frets bow toward the bridge' },
   { id: 's-curve', label: 'S-curve', hint: 'Divergent and convergent halves meet at the pivot' },
   { id: 'custom', label: 'Custom', hint: 'Type each string’s scale length' },
+  { id: 'tempered', label: 'Tempered', hint: 'True-Temperament-style frets on one scale: each fret moved under every string for a temperament and fretting compensation' },
 ];

@@ -62,8 +62,8 @@ function setMode(mode) {
   const p = clone(S.params), sc = S.design ? S.design.strings.map(s => s.scale) : null;
   if (sc) {
     if (mode === 'custom') p.customScales = sc;
-    if (S.params.mode === 'custom' || S.params.mode === 'single') { p.trebleScale = sc[0]; p.bassScale = sc[sc.length - 1]; }
-    if (S.params.mode === 'single' && Math.abs(p.bassScale - p.trebleScale) < 1) p.bassScale = p.trebleScale + 3 * IN;
+    if (S.params.mode === 'custom' || S.params.mode === 'single' || S.params.mode === 'tempered') { p.trebleScale = sc[0]; p.bassScale = sc[sc.length - 1]; }
+    if ((S.params.mode === 'single' || S.params.mode === 'tempered') && Math.abs(p.bassScale - p.trebleScale) < 1) p.bassScale = p.trebleScale + 3 * IN;
   }
   if (['divergent', 'convergent', 's-curve'].includes(mode)) p.fitToEnds = true;
   p.mode = mode;
@@ -149,6 +149,7 @@ function updateData(d, final = true) {
   }
   if (sv.pivotScale != null) bits.push(`pivot string scale <b>${fmtLen(sv.pivotScale, S.params.units)}</b>`);
   if (d.profile?.junction && Math.abs(d.profile.junction.gap) > 0.01) bits.push(`junction gap <b>${d.profile.junction.gap.toFixed(2)} mm</b>`);
+  if (d.tempered && d.tempered.compensate) bits.push(`saddle setback <b>${d.tempered.setbacks.map(v => toDisp(v, S.params.units).toFixed(S.params.units === 'in' ? 3 : 1)).join(' · ')} ${S.params.units}</b>`);
   $('solved').innerHTML = bits.length ? 'solved  ' + bits.join('<br>') : '';
   // strings table
   renderTable(d);
@@ -180,8 +181,11 @@ $('stringTable').addEventListener('change', e => {
     const v = parseLen(c.value, S.params.units);
     if (!(v > 50)) { toast('Type a scale length, e.g. 25.5 or 648mm.', 'warn'); renderTable(d); return; }
     const sc = d.strings.map(s => s.scale); sc[i] = v;
+    if (S.params.mode === 'tempered') { S.params = resolve({ ...clone(S.params), trebleScale: v }); toast('Tempered frets use one scale length for every string.', 'info'); }
+    else {
     if (S.params.mode !== 'custom') { toast('Switched to Custom so each string can be edited.', 'info'); }
     const p = clone(S.params); p.mode = 'custom'; p.customScales = sc; S.params = resolve(p);
+    }
     buildModeParams(); refreshModes();
   } else {
     let g = parseFloat(String(c.value).replace(/^\./, '0.'));
@@ -229,6 +233,7 @@ function buildModeParams() {
   const growthHint = 'Each step is the previous one times this. 1 = linear fan. Mark’s notes: keep it within 0.8–1.3.';
   const pivotSlider = () => add(numSlider('pivot', 'Pivot <small>string</small>', 1, Math.max(1, N), 0.5, { get: () => S.params.pivot + 1, set: (v, f) => setParam('pivot', v - 1, { final: f }), def: () => (N - 1) / 2 + 1, dp: 1, hardMin: 1, hardMax: N, hint: 'Where the two halves meet. Halves (e.g. 4.5) put it between two strings.' }));
   if (m === 'single') scaleSliders();
+  else if (m === 'tempered') buildTemperedParams(add, sub, host);
   else if (m === 'fan') scaleSliders();
   else if (m === 'exponential') {
     fitSwitch();
@@ -262,6 +267,29 @@ function buildModeParams() {
       box.appendChild(btn); host.appendChild(box);
     }
   }
+}
+// Tempered mode controls. Only shown in this mode; the params they set are ignored by every other mode.
+function buildTemperedParams(add, sub, host) {
+  const p = S.params;
+  add(lenSlider('trebleScale', 'Scale length', 300, 1000));
+  sub('Temperament');
+  const seg = createSegment(G.TEMPERAMENTS.map(t => ({ value: t.id, label: t.label, title: t.hint })), () => S.params.temperament, v => setParam('temperament', v, { rebuildControls: true }), { cls: 'small' });
+  host.appendChild(seg.el);
+  const row = h('div', 'inline-row');
+  row.appendChild(createSwitch('Fretting compensation', () => S.params.compensate, v => setParam('compensate', v, { rebuildControls: true })).el);
+  host.appendChild(row);
+  if (p.compensate) {
+    const r = h('div', 'row2'); host.appendChild(r);
+    const a = lenSlider('actionTreble', 'Treble action', 0.8, 3.5, { hint: 'String height over the 12th fret crown, treble string' });
+    const b = lenSlider('actionBass', 'Bass action', 0.8, 3.5, { hint: 'String height over the 12th fret crown, bass string' });
+    r.append(a.el, b.el); sliders.push(a, b);
+    add(lenSlider('fingerDepth', 'Finger depth', 0, 1.2, { hint: 'How far the finger pushes the string below the fret crown. 0 = just touching; 1.2 = down to the wood. Heavier playing goes sharper.' }));
+  }
+  sub('Fret shape');
+  host.appendChild(createSegment([{ value: 'segments', label: 'Segments', title: 'Flat under each string, smooth steps between (as on True Temperament necks)' }, { value: 'smooth', label: 'Smooth', title: 'One smooth spline through every string position' }], () => S.params.fretStyle, v => setParam('fretStyle', v), { cls: 'small' }).el);
+  host.appendChild(h('div', 'pop-note', p.compensate
+    ? 'Each fret is placed separately under every string: the temperament’s target pitch, plus an estimate of how sharp fretting makes each string. Set the saddles back by the amounts shown under Solved.'
+    : 'Each fret is placed separately under every string at the temperament’s target pitch, for an ideal string. Fretting sharpness is left to the saddle, as on a normal guitar.'));
 }
 function showFits(box) {
   const sc = S.design.strings.map(s => s.scale);
@@ -316,7 +344,7 @@ function buildModes() {
 function refreshModes() { modeBtns.forEach(b => { const on = b.dataset.mode === S.params.mode; b.classList.toggle('on', on); b.setAttribute('aria-checked', on); }); }
 
 // ------------------------------------------------------------ top bar -----
-const viewSeg = createSegment([{ value: '3d', label: '3D' }, { value: 'split', label: 'Split' }, { value: 'blueprint', label: 'Blueprint' }, { value: 'paper', label: 'Paper', title: 'White paper: the geometry of curved frets' }], () => S.view, setView);
+const viewSeg = createSegment([{ value: '3d', label: '3D' }, { value: 'split', label: 'Split' }, { value: 'blueprint', label: 'Blueprint' }, { value: 'paper', label: 'Paper', title: 'White papers: the geometry of curved frets, and tempered frets' }], () => S.view, setView);
 $('viewSeg').appendChild(viewSeg.el);
 const unitSeg = createSegment([{ value: 'in', label: 'in' }, { value: 'mm', label: 'mm' }], () => S.params.units, v => { setParam('units', v); }, { cls: 'small' });
 $('unitSeg').appendChild(unitSeg.el);
@@ -332,7 +360,7 @@ function setView(v) {
   if (!['3d', 'split', 'blueprint', 'paper'].includes(v)) v = '3d';
   const was = S.view;
   S.view = v; app.dataset.view = v; viewSeg.refresh(); savePrefs();
-  if (v === 'paper') { R3?.setAutoRotate(false); ensurePaper().then(pp => { if (S.view === 'paper') pp?.show().catch(e => console.error(e)); }); return; }
+  if (v === 'paper') { R3?.setAutoRotate(false); ensurePaper().then(pp => { if (S.view === 'paper') pp?.show({ prefer: S.params.mode === 'tempered' ? 'tempered' : 'curved' }).catch(e => console.error(e)); }); return; }
   if (was === 'paper') { paper?.hide(); R3?.setAutoRotate(S.spin); }
   if (v !== '3d' && S.design) bp.update(S.design, S.params.units);
   setTimeout(() => { updateInsets(); R3?.resize(); R3?.reframe(); }, 720);
@@ -443,7 +471,7 @@ function buildDock() {
   pb.onclick = () => {
     if (!R3) return;
     const c = R3.snapshot();
-    c.toBlob(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `curved-frets-${S.params.numStrings}str-${S.params.mode}.png`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); toast('Render saved as PNG', 'ok'); }, 'image/png');
+    c.toBlob(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `curved-frets-${S.params.numStrings}str-${S.params.mode}-${exportStamp().file}.png`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); toast('Render saved as PNG', 'ok'); }, 'image/png');
   };
   eb.appendChild(pb);
   ['svg', 'dxf', 'pdf', 'csv'].forEach(fmt => {
@@ -487,15 +515,22 @@ async function loadExports() {
     b._fn = fn;
   });
 }
+// Local timestamp for export titles ('2026-11-14 08:05') and filenames ('2026-11-14-0805').
+function exportStamp(now = new Date()) {
+  const p = n => String(n).padStart(2, '0');
+  const day = `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}`;
+  return { title: `${day} ${p(now.getHours())}:${p(now.getMinutes())}`, file: `${day}-${p(now.getHours())}${p(now.getMinutes())}` };
+}
 async function doExport(fmt) {
   const b = document.querySelector(`.dbtn.exp[data-fmt="${fmt}"]`);
   if (!b?._fn || !S.design) return;
   try {
-    let r = await b._fn(S.design, { title: undefined });
+    const stamp = exportStamp();
+    let r = await b._fn(S.design, { title: undefined, date: stamp.title });
     if (typeof r === 'string' || r instanceof Uint8Array || r instanceof Blob) r = { data: r };
     const mime = r.mime || { svg: 'image/svg+xml', dxf: 'application/dxf', pdf: 'application/pdf', csv: 'text/csv' }[fmt];
     const p = S.params, sr = S.design.metrics.scaleRange;
-    const name = r.filename || `curved-frets-${p.numStrings}str-${p.mode}-${(sr[0] / IN).toFixed(2)}-${(sr[1] / IN).toFixed(2)}in.${r.extension || fmt}`;
+    const name = r.filename || `curved-frets-${p.numStrings}str-${p.mode}-${(sr[0] / IN).toFixed(2)}-${(sr[1] / IN).toFixed(2)}in-${stamp.file}.${r.extension || fmt}`;
     const blob = r.data instanceof Blob ? r.data : new Blob([r.data], { type: mime });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click(); a.remove();

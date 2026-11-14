@@ -651,7 +651,8 @@ export function create3D(canvas, { onStats } = {}) {
 
     // --- analysis overlay: inflection beads on S-curve frets, glowing perpendicular line
     const beadM = [];
-    for (const f of d.frets) for (const q of (f.inflectionPoints || [])) { mtx.makeTranslation(q.x, FRET_H + 0.1, -q.y); beadM.push(...mtx.elements); }
+    // Tempered frets step between every pair of strings, so S-curve inflection beads would only add noise there.
+    if (d.params?.mode !== 'tempered') for (const f of d.frets) for (const q of (f.inflectionPoints || [])) { mtx.makeTranslation(q.x, FRET_H + 0.1, -q.y); beadM.push(...mtx.elements); }
     const beadGeo = new THREE.SphereGeometry(0.7, 20, 12); beadGeo.userData.key = 'bead';
     beadM.length ? setInstanced('beads', beadGeo, mats.bead, beadM, { animate: false, cast: false, receive: false }) : removePart('beads');
     if (parts.beads) parts.beads.mesh.visible = overlay;

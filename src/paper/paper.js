@@ -5,6 +5,8 @@
 import * as G from '../geometry.js';
 import { META, SECTIONS } from './content.js';
 import * as F from './figures.js';
+import * as TC from './tempered-content.js';
+import * as TF from './tempered-figures.js';
 
 const KATEX_VER = '0.16.9';
 const KATEX_BASE = `https://cdn.jsdelivr.net/npm/katex@${KATEX_VER}/dist/`;
@@ -77,6 +79,21 @@ function kTable() {
   return `<caption>Fret fraction $t_n$ and scale factor $k_n$ with the perpendicular at the octave, $p = 0.5$.</caption><thead><tr><th>Line</th><th>$t_n$</th><th>$k_n$</th><th>Bow</th></tr></thead><tbody>${body}</tbody>`;
 }
 
+// ------------------------------------------------------------ papers -------
+// Two papers share this view. Each brings its text, live facts and tables.
+const DOCS = {
+  curved: {
+    label: 'Curved frets', META, SECTIONS, facts,
+    fillLive(pane, ts) {
+      pane.querySelector('[data-live="ktable"]').innerHTML = ts(kTable());
+      pane.querySelector('[data-live="sagtable"]').innerHTML = F.sagittaTable();
+    },
+  },
+  tempered: { label: 'Tempered frets', META: TC.META, SECTIONS: TC.SECTIONS, facts: TF.facts, fillLive: (pane, ts) => TF.fillLive(pane, ts) },
+};
+const designLabel = id => F.DESIGNS[id]?.label || TF.DESIGNS[id]?.label || id;
+const designParamsOf = id => (F.DESIGNS[id] ? F.designParams(id) : TF.designParams(id));
+
 // ------------------------------------------------------------ build --------
 export function createPaper({ app, onOpenDesign, onClose }) {
   const root = document.documentElement;
@@ -91,6 +108,8 @@ export function createPaper({ app, onOpenDesign, onClose }) {
   topbar.appendChild(progress);
 
   let built = false, building = null, sections = [], tocItems = [], tocCur = null, nav = null;
+  let docId = 'curved', wired = false;
+  const doc = () => DOCS[docId];
 
   async function build() {
     const cssOk = loadCSS(new URL('./paper.css', import.meta.url).href);
@@ -102,7 +121,8 @@ export function createPaper({ app, onOpenDesign, onClose }) {
     const katex = window.katex || null;
     if (!katex) console.warn('KaTeX did not load; equations are shown as TeX source.');
 
-    const fx = facts();
+    const { META, SECTIONS } = doc();
+    const fx = doc().facts();
     const fill = s => s.replace(/\{\{(\w+)\}\}/g, (_, k) => fx[k] != null ? esc(fx[k]) : '—');
     const nSec = SECTIONS.length;
     const nFig = SECTIONS.reduce((a, s) => a + (s.html.match(/<figure /g) || []).length, 0);
@@ -127,6 +147,7 @@ export function createPaper({ app, onOpenDesign, onClose }) {
         </nav>
         <article class="paper">
           <header class="paper-hero">
+            <div class="paper-docs" role="group" aria-label="Choose a paper">${Object.entries(DOCS).map(([id, d]) => `<button type="button" data-doc="${id}" class="${id === docId ? 'on' : ''}" aria-pressed="${id === docId}">${esc(d.label)}</button>`).join('')}</div>
             <div class="kicker">${esc(META.kicker)}</div>
             <h1>${esc(META.title)}</h1>
             <p class="dek">${esc(META.dek)}</p>
@@ -145,8 +166,7 @@ export function createPaper({ app, onOpenDesign, onClose }) {
         </article>
       </div>`;
     pane.innerHTML = html;
-    pane.querySelector('[data-live="ktable"]').innerHTML = typeset(kTable(), katex);
-    pane.querySelector('[data-live="sagtable"]').innerHTML = F.sagittaTable();
+    doc().fillLive(pane, h => typeset(h, katex));
     mountFigures();
     wire();
     built = true;
@@ -154,8 +174,7 @@ export function createPaper({ app, onOpenDesign, onClose }) {
 
   // ---------------------------------------------------------- figures ------
   function openBtn(id, label = 'Open this design') {
-    const d = F.DESIGNS[id];
-    return `<button type="button" class="btn sm fig-open" data-open-id="${id}" title="Load “${esc(d?.label || id)}” into the designer and show it in 3D"><svg viewBox="0 0 16 16"><path d="M6 3.5H3.5v9h9V10M9 3h4v4M13 3L7.5 8.5"/></svg><span>${esc(label)}</span></button>`;
+    return `<button type="button" class="btn sm fig-open" data-open-id="${id}" title="Load “${esc(designLabel(id))}” into the designer and show it in 3D"><svg viewBox="0 0 16 16"><path d="M6 3.5H3.5v9h9V10M9 3h4v4M13 3L7.5 8.5"/></svg><span>${esc(label)}</span></button>`;
   }
   const exSeg = (opts, cur) => `<div class="fig-seg" role="group" aria-label="Bow scale">${opts.map(([v, l]) => `<button type="button" data-k="${v}" class="${v === cur ? 'on' : ''}" aria-pressed="${v === cur}">${l}</button>`).join('')}</div>`;
 
@@ -165,7 +184,7 @@ export function createPaper({ app, onOpenDesign, onClose }) {
       head.insertAdjacentHTML('beforeend', `<span class="fig-sp"></span><span class="live-chip" title="Computed by the geometry engine when this page opened"><i></i>Live</span>${fig.dataset.open ? openBtn(fig.dataset.open) : ''}`);
       const body = fig.querySelector('.fig-body');
       const kind = fig.dataset.fig;
-      try { RENDER[kind]?.(body, fig); }
+      try { (RENDER[kind] || TF.RENDER[kind])?.(body, fig); }
       catch (err) { console.error(err); body.innerHTML = `<div class="fig-err">This figure could not be computed: ${esc(err.message)}</div>`; }
     });
   }
@@ -230,25 +249,36 @@ export function createPaper({ app, onOpenDesign, onClose }) {
     sections = [...pane.querySelectorAll('.psec')];
     tocItems = [...pane.querySelectorAll('.toc-a')];
     tocCur = pane.querySelector('.toc-current');
+    spy();
+    if (wired) return;
+    wired = true;
     pane.addEventListener('click', e => {
       const t = e.target.closest('button'); if (!t) return;
       if (t.matches('[data-print]')) { print(); return; }
       if (t.matches('[data-close]')) { onClose?.(); return; }
+      if (t.dataset.doc) { switchDoc(t.dataset.doc); return; }
       if (t.classList.contains('toc-current')) { const open = !nav.classList.contains('open'); nav.classList.toggle('open', open); t.setAttribute('aria-expanded', open); return; }
       if (t.classList.contains('toc-a')) { goTo(t.dataset.target); nav.classList.remove('open'); tocCur.setAttribute('aria-expanded', 'false'); return; }
       if (t.dataset.openId) {
         const id = t.dataset.openId, fig = t.closest('figure');
-        const params = F.designParams(id);
+        const params = designParamsOf(id);
         if (!params) return;
         if (fig?.dataset.fig === 'seesaw' && fig.dataset.p != null) params.perpRatio = +fig.dataset.p;
-        onOpenDesign?.(params, F.DESIGNS[id].label);
+        onOpenDesign?.(params, designLabel(id));
       }
     });
     document.addEventListener('click', e => { if (nav.classList.contains('open') && !e.target.closest('.paper-toc')) { nav.classList.remove('open'); tocCur.setAttribute('aria-expanded', 'false'); } });
     let raf = 0;
     pane.addEventListener('scroll', () => { if (!raf) raf = requestAnimationFrame(() => { raf = 0; spy(); }); }, { passive: true });
     window.addEventListener('resize', () => { if (root.classList.contains('paper-mode')) spy(); });
-    spy();
+  }
+  async function switchDoc(id) {
+    if (!DOCS[id] || id === docId) return;
+    docId = id; built = false; building = null;
+    building = build().catch(err => { building = null; throw err; });
+    await building;
+    pane.scrollTop = 0;
+    requestAnimationFrame(spy);
   }
   function topOffset() {
     const tb = app.querySelector('.topbar').getBoundingClientRect();
@@ -268,7 +298,7 @@ export function createPaper({ app, onOpenDesign, onClose }) {
     if (pane.scrollTop + pane.clientHeight >= pane.scrollHeight - 4) cur = sections.length - 1;
     tocItems.forEach((a, i) => { a.classList.toggle('on', i === cur); if (i === cur) a.setAttribute('aria-current', 'true'); else a.removeAttribute('aria-current'); });
     tocCur.querySelector('.n').textContent = pad2(cur + 1);
-    tocCur.querySelector('.t').textContent = SECTIONS[cur].title;
+    tocCur.querySelector('.t').textContent = doc().SECTIONS[cur].title;
     const max = pane.scrollHeight - pane.clientHeight;
     progress.style.setProperty('--p', max > 0 ? Math.min(1, pane.scrollTop / max).toFixed(4) : 0);
   }
@@ -280,8 +310,9 @@ export function createPaper({ app, onOpenDesign, onClose }) {
 
   return {
     el: pane,
-    async show() {
+    async show({ prefer } = {}) {
       root.classList.add('paper-mode');
+      if (!built && !building && prefer && DOCS[prefer]) docId = prefer;
       if (!built) { building ||= build().catch(err => { building = null; throw err; }); await building; }
       requestAnimationFrame(spy);
       pane.focus({ preventScroll: true });

@@ -18,10 +18,13 @@
 // exactly through the real string crossings, and run on naturally to the
 // straight board edges, which are clipped where they meet each curve.
 
+import { temperedLayout, fretShape } from './tempered.js';
+export { TEMPERAMENTS } from './tempered.js';
+
 export const MM_PER_IN = 25.4;
 const IN = MM_PER_IN;
 
-export const MODES = Object.freeze(['single', 'fan', 'exponential', 'divergent', 'convergent', 's-curve', 'custom']);
+export const MODES = Object.freeze(['single', 'fan', 'exponential', 'divergent', 'convergent', 's-curve', 'custom', 'tempered']);
 
 // Mark's 9-string from FretFind2D design B (convergent "C-scale", 25.5"-29.99").
 const MARK_9 = [25.5, 25.85, 26.32, 26.939, 27.754, 28.56, 29.17, 29.64, 29.99].map(v => v * IN);
@@ -49,6 +52,13 @@ export const DEFAULTS = Object.freeze({
   boardExtension: 0.25 * IN,
   gauges: null,
   tuning: null, // optional: note names ('E4') or MIDI numbers, index 0 = treble
+  // 'tempered' mode only (True-Temperament-style frets on one scale length; see tempered.js)
+  temperament: 'tf1',   // 'tf1' (Thidell Formula 1) | 'equal'
+  compensate: true,     // also cancel fretting sharpness (physics estimate)
+  actionTreble: 1.6,    // string over the 12th fret crown, mm
+  actionBass: 2.0,
+  fingerDepth: 0.2,     // how far the finger pushes the string below the crown, mm
+  fretStyle: 'segments', // 'segments' (flat under each string) | 'smooth' (spline)
 });
 
 // ---------------------------------------------------------------------------
@@ -106,6 +116,10 @@ export function resolveParams(params = {}) {
   p.perpRatio = clamp(p.perpRatio, 0, 1);
   p.edgeMargin = Math.max(0, p.edgeMargin);
   p.boardExtension = Math.max(0, p.boardExtension);
+  p.temperament = p.temperament === 'equal' ? 'equal' : 'tf1';
+  p.compensate = p.compensate !== false && p.compensate !== 0 && p.compensate !== '0';
+  p.fretStyle = p.fretStyle === 'smooth' ? 'smooth' : 'segments';
+  for (const k of ['actionTreble', 'actionBass', 'fingerDepth']) p[k] = clamp(num(p[k], DEFAULTS[k]), 0, 10);
   return p;
 }
 
@@ -180,6 +194,7 @@ export function scaleProfile(params) {
 
   switch (p.mode) {
     case 'single':
+    case 'tempered':
       at = () => Lt;
       break;
 
@@ -335,6 +350,7 @@ function chordStats(curve) {
 
 const FD_H = 1e-2;          // finite-difference step in string-index units
 const SAMPLES_PER_GAP = 8;  // curve samples between adjacent strings
+const TEMPERED_SAMPLES_PER_GAP = 32; // tempered frets have short S-blends between strings
 const KAPPA_ZERO = 1e-6;    // |curvature| below this (radius > 1 km) counts as straight
 
 /** Build the full design. Contract: docs/CONTRACT.md. */
@@ -394,10 +410,11 @@ export function computeDesign(params = {}) {
   };
 
   // A curve of the family: t may depend on s (board end). Returns samples.
+  const tempered = p.mode === 'tempered';
   const traceLine = tOf => {
     const sLo = findEdge(tOf, edgeT, 0, -reach), sHi = findEdge(tOf, edgeB, last, last + reach);
     const ss = [sLo];
-    const K = SAMPLES_PER_GAP, first = Math.floor(sLo * K) + 1, end = Math.ceil(sHi * K) - 1;
+    const K = tempered ? TEMPERED_SAMPLES_PER_GAP : SAMPLES_PER_GAP, first = Math.floor(sLo * K) + 1, end = Math.ceil(sHi * K) - 1;
     for (let k = first; k <= end; k++) { const s = k / K; if (s - sLo > 1e-9 && sHi - s > 1e-9) ss.push(s); }
     ss.push(sHi);
     if (ss.length < 3) ss.splice(1, 0, (sLo + sHi) / 2);
@@ -455,16 +472,28 @@ export function computeDesign(params = {}) {
     };
   };
 
+  // Tempered mode: every fret is shifted separately under each string.
+  const tmp = tempered ? temperedLayout(strings, { ...p, numFrets: p.numFrets }) : null;
+  const L0 = scales[0] || 1;
   const frets = [];
   for (let n = 1; n <= p.numFrets; n++) {
-    const t = fretFraction(n), tOf = () => t;
+    const t = fretFraction(n);
+    let tOf = () => t, ts;
+    if (tmp) {
+      const sh = tmp.shifts[n - 1], shape = fretShape(sh, sn + (sb - sn) * t, { style: p.fretStyle });
+      tOf = s => t + shape(s) / L0;
+      ts = sh.map(v => t + v / L0);
+    }
     const line = traceLine(tOf);
-    frets.push(withEval({ n, t, perpSide: Math.sign(Math.round((t - r) * 1e9)), crossings: line.crossings, curve: line.curve, ...analyse(tOf, line) }, line, tOf));
+    const fr = withEval({ n, t, perpSide: Math.sign(Math.round((t - r) * 1e9)), crossings: line.crossings, curve: line.curve, ...analyse(tOf, line) }, line, tOf);
+    if (ts) { fr.ts = ts; fr.shifts = tmp.shifts[n - 1].slice(); }
+    frets.push(fr);
   }
   const mk = t => { const tOf = () => t, line = traceLine(tOf); return withEval({ crossings: line.crossings, curve: line.curve, ...analyse(tOf, line) }, line, tOf); };
   const nut = mk(0), bridge = mk(1);
   const tLast = fretFraction(p.numFrets);
-  const endOf = s => tLast + p.boardExtension / Math.max(prof.at(s), 1);
+  const lastPush = tmp && p.numFrets ? Math.max(0, ...tmp.shifts[p.numFrets - 1]) : 0;
+  const endOf = s => tLast + (p.boardExtension + lastPush) / Math.max(prof.at(s), 1);
   const endLine = traceLine(endOf);
   const boardEnd = withEval({ curve: endLine.curve, crossings: endLine.crossings }, endLine, endOf);
   const outline = [...nut.curve, ...boardEnd.curve.slice().reverse()];
@@ -522,7 +551,8 @@ export function computeDesign(params = {}) {
   if (Lmin < 300 || Lmax > 1000) warnings.push({ level: 'info', message: 'Scale lengths are outside the usual 300-1000 mm range.' });
   if (minFretSpacing < 6) warnings.push({ level: 'warn', message: `Frets ${F - 1} and ${F} are only ${minFretSpacing.toFixed(1)} mm apart on the shortest string (under 6 mm is hard to play and to slot).` });
   // Mark's built 9-string (preset mark-b) bends to about 60-75 mm, so that is known buildable.
-  if (minR < 25) warnings.push({ level: 'error', message: `Fret ${minRFret} bends to a ${minR.toFixed(0)} mm radius. That is too tight to bend fret wire sideways.` });
+  if (tempered) { /* tempered frets are cast or milled, not bent: see the tempered warnings below */ }
+  else if (minR < 25) warnings.push({ level: 'error', message: `Fret ${minRFret} bends to a ${minR.toFixed(0)} mm radius. That is too tight to bend fret wire sideways.` });
   else if (minR < 50) warnings.push({ level: 'warn', message: `Fret ${minRFret} bends to a ${minR.toFixed(0)} mm radius. Very tight: bend the wire on a jig and expect the tang to fight you.` });
   else if (minR < 100) warnings.push({ level: 'info', message: `Fret ${minRFret} bends to a ${minR.toFixed(0)} mm radius. Pre-bend the wire on a jig.` });
   if (N >= 3 && ['exponential', 'divergent', 'convergent', 's-curve', 'custom'].includes(p.mode) && maxSag < 1)
@@ -536,6 +566,12 @@ export function computeDesign(params = {}) {
   }
   if (prof.junction && !p.fitToEnds && Math.abs(prof.junction.gap) > 0.5)
     warnings.push({ level: 'info', message: `The treble and bass series miss each other by ${prof.junction.gap.toFixed(2)} mm at the pivot. Turn on "fit to ends" to make them meet.` });
+  if (tmp) {
+    const big = Math.max(0, ...tmp.shifts.flat().map(Math.abs));
+    warnings.push({ level: 'info', message: `Tempered frets: largest shift ${big.toFixed(2)} mm from a plain fret. They are cast or milled (True Temperament casts them), not bent from standard fret wire.` });
+    if (minR < 1.5) warnings.push({ level: 'warn', message: `Fret ${minRFret} turns through a ${minR.toFixed(1)} mm radius between strings, tighter than a fret crown is wide. Widen the string spacing or use the smooth fret style.` });
+    if (p.compensate) warnings.push({ level: 'info', message: `Fretting compensation is a physics estimate (action ${p.actionTreble.toFixed(1)}-${p.actionBass.toFixed(1)} mm, finger depth ${p.fingerDepth.toFixed(2)} mm, steel strings). True Temperament measures each note instead. Set the saddles back ${Math.min(...tmp.setbacks).toFixed(1)}-${Math.max(...tmp.setbacks).toFixed(1)} mm.` });
+  }
   if (userTuning) strings.forEach(st => {
     if (st.tensionLb < 10 || st.tensionLb > 32) warnings.push({ level: 'info', message: `String ${st.i + 1} (${st.note}, ${st.gauge}) is about ${st.tensionLb.toFixed(1)} lb, outside 10-32 lb.` });
   });
@@ -544,6 +580,7 @@ export function computeDesign(params = {}) {
     params: p, strings, frets, nut, bridge, boardEnd, outline, widths, metrics, warnings,
     profile: { kind: prof.kind, pivot: prof.pivot, solved: prof.solved, junction: prof.junction, at: prof.at, samples, secondDiff },
     edges: { treble: [edgeT.a, edgeT.b], bass: [edgeB.a, edgeB.b] },
+    ...(tmp ? { tempered: { temperament: p.temperament, compensate: p.compensate, fretStyle: p.fretStyle, setbacks: tmp.setbacks, targets: tmp.targets, plainError: tmp.plainError } } : {}),
   };
 }
 
@@ -723,6 +760,12 @@ export const PRESETS = Object.freeze({
     params: { numStrings: 7, numFrets: 24, mode: 'fan', trebleScale: 25.5 * IN, bassScale: 27 * IN,
       perpRatio: 0.4, ...fromInches(1.95, 2.4, 7, 0.125) },
   },
+  'tempered-6': {
+    label: 'Tempered 6-string (Thidell Formula 1)',
+    description: 'True-Temperament-style frets on a 25.5" scale: Thidell Formula 1 plus estimated fretting compensation, flat under each string.',
+    params: { numStrings: 6, numFrets: 22, mode: 'tempered', trebleScale: 25.5 * IN, bassScale: 25.5 * IN, perpRatio: 0,
+      temperament: 'tf1', compensate: true, fretStyle: 'segments', ...fromInches(1.75, 2.1, 6, 0.125) },
+  },
   'single-6': {
     label: 'Standard 6-string',
     description: 'Single 25.5" scale, straight frets.',
@@ -799,6 +842,8 @@ const KEYS = [
   ['th', 'trebleHalf', 'h'], ['bh', 'bassHalf', 'h'], ['cs', 'customScales', 'a'],
   ['pr', 'perpRatio', 'n'], ['ns', 'nutSpacing', 'n'], ['bs', 'bridgeSpacing', 'n'],
   ['em', 'edgeMargin', 'n'], ['ext', 'boardExtension', 'n'], ['ga', 'gauges', 'a'], ['tu', 'tuning', 't'],
+  ['te', 'temperament', 's'], ['cp', 'compensate', 'b'], ['ac', 'actionTreble', 'n'], ['ab', 'actionBass', 'n'],
+  ['fd', 'fingerDepth', 'n'], ['fs', 'fretStyle', 's'],
 ];
 const fmt = v => String(+(+v).toFixed(4));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);

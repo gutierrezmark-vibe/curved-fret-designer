@@ -16,12 +16,14 @@ const MM2PT = 72 / 25.4;
 const f3 = v => (Math.round(v * 1000) / 1000).toString();
 const ascii = s => String(s).replace(/[‘’]/g, "'").replace(/[“”″]/g, '"').replace(/[–—]/g, '-').replace(/[^\x20-\x7e]/g, '?');
 
+// opts.date (optional, e.g. '2026-11-14 08:05') is appended to the title as a timestamp.
 function titleOf(design, opts) {
-  if (opts && opts.title) return opts.title;
+  const stamp = opts && opts.date ? ` - ${opts.date}` : '';
+  if (opts && opts.title) return opts.title + stamp;
   const p = design.params, n = p.numStrings, u = p.units;
   const [a, b] = design.metrics.scaleRange;
   const L = v => (u === 'mm' ? `${v.toFixed(1)} mm` : `${(v / IN).toFixed(3)}"`);
-  return `${n}-string ${p.mode} ${L(a)}${n > 1 && b - a > 1e-6 ? ' - ' + L(b) : ''}`;
+  return `${n}-string ${p.mode} ${L(a)}${n > 1 && b - a > 1e-6 ? ' - ' + L(b) : ''}${stamp}`;
 }
 
 /**
@@ -158,7 +160,7 @@ export function exportCSV(design) {
   const rows = [['string', 'note', 'gauge_in', 'scale_mm', 'scale_in', 'fret', 'from_nut_mm', 'from_nut_in', 'x_mm', 'y_mm', 'x_in', 'y_in']];
   const r4 = v => (Math.round(v * 1e4) / 1e4).toString();
   for (const s of design.strings) {
-    const pts = [{ f: 0, t: 0, q: s.nut }, ...design.frets.map(fr => ({ f: fr.n, t: fr.t ?? 1 - Math.pow(2, -fr.n / 12), q: fr.crossings[s.i] })), { f: 'bridge', t: 1, q: s.bridge }];
+    const pts = [{ f: 0, t: 0, q: s.nut }, ...design.frets.map(fr => ({ f: fr.n, t: fr.ts?.[s.i] ?? fr.t ?? 1 - Math.pow(2, -fr.n / 12), q: fr.crossings[s.i] })), { f: 'bridge', t: 1, q: s.bridge }];
     for (const { f, t, q } of pts) {
       const d = s.scale * t;
       rows.push([s.i + 1, s.note || '', s.gauge, r4(s.scale), r4(s.scale / IN), f, r4(d), r4(d / IN), r4(q.x), r4(q.y), r4(q.x / IN), r4(q.y / IN)]);
@@ -260,7 +262,7 @@ export function exportPDF(design, opts = {}) {
   // ---- cover + fret table pages
   const strings = design.strings, F = design.frets.length;
   const COLS = 10, ROWS = 32;
-  const rowsAll = [{ label: 'nut', t: 0 }, ...design.frets.map(fr => ({ label: String(fr.n), t: fr.t ?? 1 - Math.pow(2, -fr.n / 12) })), { label: 'scale', t: 1 }];
+  const rowsAll = [{ label: 'nut', t: 0 }, ...design.frets.map(fr => ({ label: String(fr.n), t: fr.t ?? 1 - Math.pow(2, -fr.n / 12), ts: fr.ts })), { label: 'scale', t: 1 }];
   const colChunks = []; for (let i = 0; i < strings.length; i += COLS) colChunks.push(strings.slice(i, i + COLS));
   const rowChunks = []; for (let i = 0; i < rowsAll.length; i += ROWS) rowChunks.push(rowsAll.slice(i, i + ROWS));
   let first = true;
@@ -279,6 +281,11 @@ export function exportPDF(design, opts = {}) {
       ];
       if (s.scalar != null) lines.push(`Series: scalar ${s.scalar.toFixed(4)} mm, growth ${s.growth.toFixed(4)}`);
       if (s.trebleHalf) lines.push(`Treble half: scalar ${s.trebleHalf.scalar.toFixed(4)} mm, growth ${s.trebleHalf.growth.toFixed(4)}   Bass half: scalar ${s.bassHalf.scalar.toFixed(4)} mm, growth ${s.bassHalf.growth.toFixed(4)}   Pivot ${design.profile.pivot}`);
+      if (design.tempered) {
+        const tq = design.tempered, sb = tq.setbacks.map(v => v.toFixed(2)).join(' / ');
+        lines.push(`Tempered frets: ${tq.temperament === 'tf1' ? 'Thidell Formula 1' : 'equal temperament'}${tq.compensate ? ', fretting compensation on' : ''}, ${tq.fretStyle} style. Each fret is placed separately on every string (table below).`);
+        if (tq.compensate) lines.push(`Saddle setback from the scale line, string 1 to ${tq.setbacks.length} (mm): ${sb}`);
+      }
       for (const w of design.warnings.slice(0, 4)) lines.push(`${w.level.toUpperCase()}: ${w.message}`);
       for (const t of lines) { pg.text(x0, y, t.length > 150 ? t.slice(0, 147) + '...' : t, 8); y -= 11; }
       y -= 6;
@@ -292,7 +299,7 @@ export function exportPDF(design, opts = {}) {
     rc.forEach((row, j) => {
       if (j % 2 === 0) pg.fillRect(x0, y - 2.2, firstW + cc.length * colW, rowH, 0.93);
       pg.text(x0, y, row.label, 7.5);
-      cc.forEach((s, k) => pg.text(x0 + firstW + (k + 1) * colW - 3, y, U(s.scale * row.t), 7.5, { align: 'right' }));
+      cc.forEach((s, k) => pg.text(x0 + firstW + (k + 1) * colW - 3, y, U(s.scale * (row.ts?.[s.i] ?? row.t)), 7.5, { align: 'right' }));
       y -= rowH;
     });
     pages.push(pg.content);

@@ -30,7 +30,7 @@ decodeParams(hash)      // -> params
 | `units` | `'in' \| 'mm'` | display units only |
 | `numStrings` | int ≥ 1 | **no maximum** |
 | `numFrets` | int | default 24 |
-| `mode` | `'single' \| 'fan' \| 'exponential' \| 'divergent' \| 'convergent' \| 's-curve' \| 'custom'` | how scale lengths are generated |
+| `mode` | `'single' \| 'fan' \| 'exponential' \| 'divergent' \| 'convergent' \| 's-curve' \| 'custom' \| 'tempered'` | how scale lengths are generated |
 | `trebleScale`, `bassScale` | mm | target end scales (single uses `trebleScale`) |
 | `scalar`, `growth` | number | `L[n] = L[n-1] ± scalar·growth^(n-1)` (mm) |
 | `direction` | `'toBass' \| 'toTreble'` | which end is the anchor in `exponential` mode |
@@ -43,6 +43,11 @@ decodeParams(hash)      // -> params
 | `edgeMargin` | mm | outer string to board edge (nut and bridge) |
 | `boardExtension` | mm | how far the board continues past the last fret |
 | `gauges` | number[] inches | optional, otherwise `defaultGauges(numStrings)` |
+| `temperament` | `'tf1' \| 'equal'` | `tempered` mode only: Thidell Formula 1 or plain 12-TET targets |
+| `compensate` | bool | `tempered` only: also cancel fretting sharpness (physics estimate) |
+| `actionTreble`, `actionBass` | mm | `tempered` only: string over the 12th fret crown |
+| `fingerDepth` | mm | `tempered` only: how far the finger pushes the string below the crown |
+| `fretStyle` | `'segments' \| 'smooth'` | `tempered` only: flat under each string with C2 steps, or one spline |
 
 `nutWidth = (N-1)·nutSpacing + 2·edgeMargin`. Bridge width works the same way.
 
@@ -71,3 +76,11 @@ decodeParams(hash)      // -> params
 ```
 
 Fret positions use 12-TET: on each string, fret `n` sits at fraction `1 - 2^(-n/12)` from the nut toward the bridge.
+
+## Tempered mode (`src/tempered.js`)
+
+`mode: 'tempered'` is a single-scale board with True-Temperament-style frets. Every other mode ignores the tempered params and runs exactly as before. Each fret is shifted separately under each string (temperament target in cents, plus optional fretting compensation), so in this mode only:
+
+- `frets[n].ts[i]` is the fraction along string `i` (in place of the shared `t`), and `frets[n].shifts[i]` is the mm shift from plain 12-TET (+ toward the bridge).
+- `design.tempered = { temperament, compensate, fretStyle, setbacks[], targets[][], plainError[][] }`. `setbacks` are saddle setbacks in mm from the scale line.
+- Exporters read `fr.ts?.[i] ?? fr.t`. Bend-radius warnings are replaced, because tempered frets are cast or milled, not bent.

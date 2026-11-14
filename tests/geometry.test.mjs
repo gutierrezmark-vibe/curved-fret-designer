@@ -18,7 +18,8 @@ const BOARD_C = [25.5, 26.052, 26.56, 27.051, 27.5025, 27.9245, 28.319, 28.688];
 
 // A spread of designs covering every mode, odd/even counts and perp ratios.
 const CASES = [
-  ...Object.entries(PRESETS).map(([k, v]) => [k, v.params]),
+  // 12-TET scale-mode presets. Tempered presets move frets on purpose and have their own tests.
+  ...Object.entries(PRESETS).filter(([, v]) => v.params.mode !== 'tempered').map(([k, v]) => [k, v.params]),
   ['defaults', {}],
   ['exp toTreble', { mode: 'exponential', direction: 'toTreble', numStrings: 7, growth: 1.2, bassScale: 28 * IN }],
   ['divergent even', { mode: 'divergent', numStrings: 8, pivot: 3.5, growth: 0.85, bassScale: 28 * IN }],
@@ -175,7 +176,8 @@ test('1, 2, 6, 12, 18 and 24 strings all produce finite geometry', () => {
     assert.ok(d.frets.every(f => f.curve.length >= 3 && Number.isFinite(f.sagitta) && f.minRadius > 0));
     assert.ok(Number.isFinite(d.metrics.maxSagitta));
     assert.ok(!d.warnings.some(w => w.level === 'error'), `N=${N} ${mode}: ${JSON.stringify(d.warnings)}`);
-    if (N <= 2) assert.ok(d.frets.every(f => f.inflections === 0));
+    // Scale-curve modes cannot bend with 1-2 strings. A tempered fret steps between strings by design.
+    if (N <= 2 && mode !== 'tempered') assert.ok(d.frets.every(f => f.inflections === 0));
   }
 });
 
@@ -329,4 +331,75 @@ test('CAM export: every fret is ONE smooth spline through every string crossing 
     const fretPaths = [...svg.matchAll(/<path d="M[^"]*" data-fret="\d+"\/>/g)];
     assert.equal(fretPaths.length, d.frets.length, `${key}: one <path> per fret`);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Tempered mode (True-Temperament-style frets). Lives apart from the scale modes.
+
+test('tempered: equal temperament without compensation is exactly a plain single-scale board', () => {
+  const base = { numStrings: 6, numFrets: 22, trebleScale: 25.5 * IN, ...{ nutSpacing: 7, bridgeSpacing: 10.4 } };
+  const a = computeDesign({ ...base, mode: 'single' });
+  const b = computeDesign({ ...base, mode: 'tempered', temperament: 'equal', compensate: false });
+  b.frets.forEach((f, k) => f.crossings.forEach((q, i) => near(dist(q, a.frets[k].crossings[i]), 0, 1e-9, `fret ${f.n} string ${i + 1}`)));
+});
+
+test('tempered: Thidell Formula 1 frets sit on each string where the target pitch is', () => {
+  const L = 25.5 * IN;
+  const d = computeDesign({ numStrings: 6, numFrets: 22, mode: 'tempered', trebleScale: L, temperament: 'tf1', compensate: false });
+  const TF1 = [2, -4, 2, -4, -2, 0, -4, 4, -4, 0, -4, -1], OPEN = { 64: -1, 59: -1, 55: 4, 50: 2, 45: 0, 40: -2 };
+  for (const s of d.strings) for (const f of d.frets) {
+    const c = 100 * f.n + TF1[(s.midi + f.n) % 12] - OPEN[s.midi];
+    const want = L * (1 - Math.pow(2, -c / 1200));
+    near(dist(s.nut, f.crossings[s.i]), want, 1e-6, `${s.note} fret ${f.n}`);
+    near(f.ts[s.i] * L, want, 1e-6);
+  }
+  // G string, fret 1 (G#: -4 against an open G at +4) is the classic big kink toward the nut.
+  assert.ok(d.frets[0].shifts[2] < -2.5 && d.frets[0].shifts[2] === Math.min(...d.frets[0].shifts));
+});
+
+test('tempered: compensation is plausible, frets stay drawable, nothing is an error', () => {
+  for (const N of [4, 6, 7, 8]) {
+    const d = computeDesign({ numStrings: N, mode: 'tempered', trebleScale: 25.5 * IN });
+    const sh = d.frets.flatMap(f => f.shifts);
+    assert.ok(sh.every(Number.isFinite) && Math.max(...sh.map(Math.abs)) < 8, `N=${N}`);
+    // A normal 25.5" six-string (default 9-42 set) sets its saddles back about 1-5 mm.
+    const lim = N <= 6 ? 6 : 25;
+    assert.ok(d.tempered.setbacks.every(v => v > 0.5 && v < lim), `setbacks ${d.tempered.setbacks}`);
+    assert.ok(d.metrics.minRadius >= 1.5, `N=${N} radius ${d.metrics.minRadius}`);
+    assert.ok(!d.warnings.some(w => w.level === 'error'));
+    // the board end clears the last fret everywhere
+    const last = d.frets[d.frets.length - 1];
+    last.crossings.forEach((q, i) => assert.ok(dist(d.strings[i].nut, d.boardEnd.crossings[i]) > dist(d.strings[i].nut, q) + 1));
+  }
+});
+
+test('tempered: share links round-trip and default links are unchanged', () => {
+  const p = { mode: 'tempered', temperament: 'equal', compensate: false, actionTreble: 1.4, actionBass: 2.2, fingerDepth: 0.35, fretStyle: 'smooth' };
+  const back = decodeParams(encodeParams(p));
+  for (const k of Object.keys(p)) assert.deepEqual(back[k], p[k], k);
+  assert.ok(!/te=|cp=|ac=|ab=|fd=|fs=/.test(encodeParams(PRESETS['mark-b'].params)));
+});
+
+test('tempered: DXF has ONE smooth spline per fret through every string, for Fusion', () => {
+  for (const fretStyle of ['segments', 'smooth']) {
+    const d = computeDesign({ numStrings: 6, mode: 'tempered', fretStyle });
+    const out = exportDXF(d);
+    assert.ok(out.splines && out.maxDeviationMm <= 0.001 + 1e-9, `${fretStyle}: ${out.maxDeviationMm}`);
+    const dxf = out.data.split(/\r?\n/).map(s => s.trim());
+    const splines = dxf.filter((v, k) => v === 'SPLINE' && dxf[k - 1] === '0').length;
+    assert.equal(splines, d.frets.length + 4);
+    const csv = exportCSV(d).data;
+    const row = csv.split('\r\n').find(r => r.startsWith('3,G3,') && r.split(',')[5] === '1');
+    near(Number(row.split(',')[6]), d.frets[0].ts[2] * d.strings[2].scale, 1e-3, 'CSV fret 1 on G uses the tempered position');
+  }
+});
+
+test('exports: an optional date is stamped into every title, and nothing changes without it', () => {
+  const d = computeDesign(PRESETS['tempered-6'].params);
+  const date = '2026-11-14 08:05';
+  assert.ok(exportSVG(d, { date }).data.includes(`<title>6-string tempered 647.7 mm - ${date}</title>`));
+  assert.ok(exportDXF(d, { date }).data.includes(`- ${date} - 1:1 mm`));
+  assert.ok(Buffer.from(exportPDF(d, { date }).data).toString('latin1').includes(date));
+  assert.equal(exportSVG(d).data, exportSVG(d, {}).data);
+  assert.ok(!exportSVG(d).data.includes(date));
 });
