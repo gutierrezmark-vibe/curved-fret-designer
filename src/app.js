@@ -474,8 +474,8 @@ function buildDock() {
     c.toBlob(b => { const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = `curved-frets-${S.params.numStrings}str-${S.params.mode}-${exportStamp().file}.png`; document.body.appendChild(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); toast('Render saved as PNG', 'ok'); }, 'image/png');
   };
   eb.appendChild(pb);
-  ['svg', 'dxf', 'pdf', 'csv'].forEach(fmt => {
-    const b = h('button', 'dbtn exp soon', `<b>${fmt.toUpperCase()}</b>`); b.dataset.fmt = fmt; b.disabled = true; b.title = `${fmt.toUpperCase()} export is coming online`;
+  ['svg', 'dxf', 'pdf', 'pdf1', 'csv'].forEach(fmt => {
+    const b = h('button', 'dbtn exp soon', `<b>${EXPORT_LABEL[fmt][0]}</b>${EXPORT_LABEL[fmt][1] ? `<small>${EXPORT_LABEL[fmt][1]}</small>` : ''}`); b.dataset.fmt = fmt; b.disabled = true; b.title = `${EXPORT_LABEL[fmt][0]} export is coming online`;
     b.onclick = () => doExport(fmt); eb.appendChild(b);
   });
   refreshDock();
@@ -504,14 +504,17 @@ function setCam(id) {
   if (S.spin) { S.spin = false; R3?.setAutoRotate(false); refreshDock(); }
 }
 const EXPORT_FNS = {
-  svg: ['exportSVG', 'toSVG', 'svg'], dxf: ['exportDXF', 'toDXF', 'dxf'], pdf: ['exportPDF', 'toPDF', 'pdf'], csv: ['exportCSV', 'toCSV', 'csv'],
+  svg: ['exportSVG', 'toSVG', 'svg'], dxf: ['exportDXF', 'toDXF', 'dxf'], pdf: ['exportPDF', 'toPDF', 'pdf'], pdf1: ['exportPDFFull'], csv: ['exportCSV', 'toCSV', 'csv'],
 };
+// Button text [main, small caption] and the name used in messages.
+const EXPORT_LABEL = { svg: ['SVG'], dxf: ['DXF'], pdf: ['PDF', 'tiles'], pdf1: ['PDF', '1:1'], csv: ['CSV'] };
+const EXPORT_NAME = { svg: 'SVG', dxf: 'DXF', pdf: 'Tiled PDF', pdf1: 'Full-size 1:1 PDF', csv: 'CSV' };
 async function loadExports() {
   try { X = await import('./exports.js'); } catch { X = null; }
   document.querySelectorAll('.dbtn.exp[data-fmt]').forEach(b => {
-    const fmt = b.dataset.fmt, fn = X && (EXPORT_FNS[fmt].map(n => X[n]).find(f => typeof f === 'function') || (typeof X.exportDesign === 'function' ? (d) => X.exportDesign(d, fmt) : null));
+    const fmt = b.dataset.fmt, fn = X && (EXPORT_FNS[fmt].map(n => X[n]).find(f => typeof f === 'function') || (typeof X.exportDesign === 'function' && fmt !== 'pdf1' ? (d) => X.exportDesign(d, fmt) : null));
     b.disabled = !fn; b.classList.toggle('soon', !fn);
-    b.title = fn ? { svg: '1:1 SVG template (laser / print)', dxf: 'DXF for CAM: one smooth spline per fret (mm)', pdf: 'Tiled 1:1 PDF with fret table', csv: 'Fret positions per string' }[fmt] : `${fmt.toUpperCase()} export is coming online`;
+    b.title = fn ? { svg: '1:1 SVG template (laser / print)', dxf: 'DXF for CAM: one smooth spline per fret (mm)', pdf: 'Tiled 1:1 PDF on Letter pages with fret table (home printer: tape the pages together)', pdf1: 'Full-size 1:1 PDF on ONE large page with fret table (for a plotter / print shop)', csv: 'Fret positions per string' }[fmt] : `${EXPORT_NAME[fmt]} export is coming online`;
     b._fn = fn;
   });
 }
@@ -528,15 +531,16 @@ async function doExport(fmt) {
     const stamp = exportStamp();
     let r = await b._fn(S.design, { title: undefined, date: stamp.title });
     if (typeof r === 'string' || r instanceof Uint8Array || r instanceof Blob) r = { data: r };
-    const mime = r.mime || { svg: 'image/svg+xml', dxf: 'application/dxf', pdf: 'application/pdf', csv: 'text/csv' }[fmt];
+    const mime = r.mime || { svg: 'image/svg+xml', dxf: 'application/dxf', pdf: 'application/pdf', pdf1: 'application/pdf', csv: 'text/csv' }[fmt];
     const p = S.params, sr = S.design.metrics.scaleRange;
-    const name = r.filename || `curved-frets-${p.numStrings}str-${p.mode}-${(sr[0] / IN).toFixed(2)}-${(sr[1] / IN).toFixed(2)}in-${stamp.file}.${r.extension || fmt}`;
+    const name = r.filename || `curved-frets-${p.numStrings}str-${p.mode}-${(sr[0] / IN).toFixed(2)}-${(sr[1] / IN).toFixed(2)}in-${stamp.file}${r.suffix ? '-' + r.suffix : ''}.${r.extension || fmt}`;
     const blob = r.data instanceof Blob ? r.data : new Blob([r.data], { type: mime });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click(); a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 4000);
-    toast(`${fmt.toUpperCase()} saved: ${name}${r.pages ? ` (${r.pages} pages)` : ''}`, 'ok');
-  } catch (err) { console.error(err); toast(`${fmt.toUpperCase()} export failed: ${err.message}`, 'error'); }
+    const size = r.sizeMM ? ` (one ${r.sizeMM[0].toFixed(0)} x ${r.sizeMM[1].toFixed(0)} mm page)` : r.pages ? ` (${r.pages} pages)` : '';
+    toast(`${EXPORT_NAME[fmt]} saved: ${name}${size}`, 'ok');
+  } catch (err) { console.error(err); toast(`${EXPORT_NAME[fmt]} export failed: ${err.message}`, 'error'); }
 }
 
 // ------------------------------------------------------------ layout ------

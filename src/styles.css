@@ -238,6 +238,7 @@ table.strings td.note { color: var(--muted); text-align: right; }
 .dbtn:disabled { opacity: .35; cursor: not-allowed; }
 .dbtn.exp { min-width: 42px; font-family: var(--mono); font-size: 10.5px; letter-spacing: .06em; }
 .dbtn.exp b { font-weight: 500; }
+.dbtn.exp small { font-size: 7.5px; letter-spacing: .1em; color: var(--faint); margin-top: -2px; }
 .dbtn.exp.soon { position: relative; }
 .dbtn.exp.soon::after { content: 'soon'; position: absolute; bottom: 2px; font-size: 7.5px; letter-spacing: .14em; color: var(--faint); font-family: var(--ui); text-transform: uppercase; }
 .swatch { width: 22px; height: 22px; border-radius: 50%; border: 1px solid rgba(255,255,255,.18); padding: 0; position: relative; transition: transform .25s var(--ease), box-shadow .25s; }

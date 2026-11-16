@@ -246,6 +246,48 @@ function rulers(pg, x, y) {
   pg.text(x + 4 * 72 + 4, y2, '4 in   - check both before cutting', 6.5);
 }
 
+/** Summary lines for the cover / title block. */
+function infoLines(design) {
+  const p = design.params, units = p.units === 'mm' ? 'mm' : 'in';
+  const m = design.metrics, s = design.profile && design.profile.solved || {};
+  const L = v => (units === 'mm' ? `${v.toFixed(2)} mm` : `${(v / IN).toFixed(4)} in`);
+  const lines = [
+    `Mode: ${p.mode}   Strings: ${p.numStrings}   Frets: ${p.numFrets}   Perpendicular at ${(p.perpRatio * 100).toFixed(1)}% of each scale (fret ${isFinite(m.perpFret) ? m.perpFret.toFixed(2) : 'bridge'})`,
+    `Scales: ${L(m.scaleRange[0])} to ${L(m.scaleRange[1])}   Nut width ${L(design.widths.nut)}   Bridge width ${L(design.widths.bridge)}   Edge margin ${L(p.edgeMargin)}`,
+    `Largest fret bow (sagitta) ${m.maxSagitta.toFixed(2)} mm at fret ${m.maxSagittaFret ?? '-'}   Tightest radius ${isFinite(m.minRadius) ? m.minRadius.toFixed(0) + ' mm' : 'straight'}   Frets with an S: ${m.inflectingFrets}`,
+  ];
+  if (s.scalar != null) lines.push(`Series: scalar ${s.scalar.toFixed(4)} mm, growth ${s.growth.toFixed(4)}`);
+  if (s.trebleHalf) lines.push(`Treble half: scalar ${s.trebleHalf.scalar.toFixed(4)} mm, growth ${s.trebleHalf.growth.toFixed(4)}   Bass half: scalar ${s.bassHalf.scalar.toFixed(4)} mm, growth ${s.bassHalf.growth.toFixed(4)}   Pivot ${design.profile.pivot}`);
+  if (design.tempered) {
+    const tq = design.tempered, sb = tq.setbacks.map(v => v.toFixed(2)).join(' / ');
+    lines.push(`Tempered frets: ${tq.temperament === 'tf1' ? 'Thidell Formula 1' : 'equal temperament'}${tq.compensate ? ', fretting compensation on' : ''}, ${tq.fretStyle} style. Each fret is placed separately on every string (table below).`);
+    if (tq.compensate) lines.push(`Saddle setback from the scale line, string 1 to ${tq.setbacks.length} (mm): ${sb}`);
+  }
+  for (const w of design.warnings.slice(0, 4)) lines.push(`${w.level.toUpperCase()}: ${w.message}`);
+  return lines.map(t => (t.length > 150 ? t.slice(0, 147) + '...' : t));
+}
+
+/** Fret-table rows: nut, every fret, then the scale length (t = fraction of each string's scale). */
+function fretRows(design) {
+  return [{ label: 'nut', t: 0 }, ...design.frets.map(fr => ({ label: String(fr.n), t: fr.t ?? 1 - Math.pow(2, -fr.n / 12), ts: fr.ts })), { label: 'scale', t: 1 }];
+}
+
+/** The 1:1 top view. T maps a design point {x, y} to page points [x, y]. */
+function drawBoard(pg, P, design, T) {
+  pg.stroke(0.25, 0.5); pg.dash(6, 2); pg.poly(P.centre.map(T));
+  pg.stroke(0.2, 0.5); pg.dash(2, 1.5); for (const s of P.strings) pg.poly(s.map(T));
+  pg.stroke(0.6); pg.poly(P.outline.map(T), true);
+  pg.stroke(1.0); pg.poly(P.nut.map(T));
+  for (const fr of P.frets) {
+    pg.stroke(fr.n === 12 ? 0.6 : 0.4); pg.poly(fr.curve.map(T));
+    const [x, y] = T(fr.curve[0]); pg.text(x, y + 5, String(fr.n), 6.5, { align: 'center' });
+  }
+  pg.stroke(0.6); pg.dash(4, 2); pg.poly(P.bridge.map(T));
+  { const [x, y] = T(P.nut[0]); pg.text(x, y + 5, 'NUT', 6.5, { align: 'center', bold: true }); }
+  { const [x, y] = T(P.bridge[0]); pg.text(x, y + 5, 'BRIDGE', 6.5, { align: 'center', bold: true }); }
+  for (const s of design.strings) { const [x, y] = T(s.nut); pg.text(x - 6, y - 2, String(s.i + 1), 6, { align: 'right', gray: 0.3 }); }
+}
+
 /**
  * 1:1 tiled template on Letter-landscape pages plus a cover page with the
  * per-string fret table. Pages overlap by 15 mm: trim each later page on its
@@ -262,7 +304,7 @@ export function exportPDF(design, opts = {}) {
   // ---- cover + fret table pages
   const strings = design.strings, F = design.frets.length;
   const COLS = 10, ROWS = 32;
-  const rowsAll = [{ label: 'nut', t: 0 }, ...design.frets.map(fr => ({ label: String(fr.n), t: fr.t ?? 1 - Math.pow(2, -fr.n / 12), ts: fr.ts })), { label: 'scale', t: 1 }];
+  const rowsAll = fretRows(design);
   const colChunks = []; for (let i = 0; i < strings.length; i += COLS) colChunks.push(strings.slice(i, i + COLS));
   const rowChunks = []; for (let i = 0; i < rowsAll.length; i += ROWS) rowChunks.push(rowsAll.slice(i, i + ROWS));
   let first = true;
@@ -272,22 +314,7 @@ export function exportPDF(design, opts = {}) {
     const x0 = MARGIN * MM2PT;
     if (first) {
       pg.text(x0, y, title, 15, { bold: true }); y -= 16;
-      const m = design.metrics, s = design.profile && design.profile.solved || {};
-      const L = v => (units === 'mm' ? `${v.toFixed(2)} mm` : `${(v / IN).toFixed(4)} in`);
-      const lines = [
-        `Mode: ${p.mode}   Strings: ${p.numStrings}   Frets: ${p.numFrets}   Perpendicular at ${(p.perpRatio * 100).toFixed(1)}% of each scale (fret ${isFinite(m.perpFret) ? m.perpFret.toFixed(2) : 'bridge'})`,
-        `Scales: ${L(m.scaleRange[0])} to ${L(m.scaleRange[1])}   Nut width ${L(design.widths.nut)}   Bridge width ${L(design.widths.bridge)}   Edge margin ${L(p.edgeMargin)}`,
-        `Largest fret bow (sagitta) ${m.maxSagitta.toFixed(2)} mm at fret ${m.maxSagittaFret ?? '-'}   Tightest radius ${isFinite(m.minRadius) ? m.minRadius.toFixed(0) + ' mm' : 'straight'}   Frets with an S: ${m.inflectingFrets}`,
-      ];
-      if (s.scalar != null) lines.push(`Series: scalar ${s.scalar.toFixed(4)} mm, growth ${s.growth.toFixed(4)}`);
-      if (s.trebleHalf) lines.push(`Treble half: scalar ${s.trebleHalf.scalar.toFixed(4)} mm, growth ${s.trebleHalf.growth.toFixed(4)}   Bass half: scalar ${s.bassHalf.scalar.toFixed(4)} mm, growth ${s.bassHalf.growth.toFixed(4)}   Pivot ${design.profile.pivot}`);
-      if (design.tempered) {
-        const tq = design.tempered, sb = tq.setbacks.map(v => v.toFixed(2)).join(' / ');
-        lines.push(`Tempered frets: ${tq.temperament === 'tf1' ? 'Thidell Formula 1' : 'equal temperament'}${tq.compensate ? ', fretting compensation on' : ''}, ${tq.fretStyle} style. Each fret is placed separately on every string (table below).`);
-        if (tq.compensate) lines.push(`Saddle setback from the scale line, string 1 to ${tq.setbacks.length} (mm): ${sb}`);
-      }
-      for (const w of design.warnings.slice(0, 4)) lines.push(`${w.level.toUpperCase()}: ${w.message}`);
-      for (const t of lines) { pg.text(x0, y, t.length > 150 ? t.slice(0, 147) + '...' : t, 8); y -= 11; }
+      for (const t of infoLines(design)) { pg.text(x0, y, t, 8); y -= 11; }
       y -= 6;
       first = false;
     } else { pg.text(x0, y, `${title} - fret table (continued)`, 10, { bold: true }); y -= 16; }
@@ -335,18 +362,7 @@ export function exportPDF(design, opts = {}) {
     rulers(pg, left, (PAGE_H - MARGIN - 13) * MM2PT);
 
     pg.clip(left, bottom, areaW * MM2PT, areaH * MM2PT);
-    pg.stroke(0.25, 0.5); pg.dash(6, 2); pg.poly(P.centre.map(T));
-    pg.stroke(0.2, 0.5); pg.dash(2, 1.5); for (const s of P.strings) pg.poly(s.map(T));
-    pg.stroke(0.6); pg.poly(P.outline.map(T), true);
-    pg.stroke(1.0); pg.poly(P.nut.map(T));
-    for (const fr of P.frets) {
-      pg.stroke(fr.n === 12 ? 0.6 : 0.4); pg.poly(fr.curve.map(T));
-      const [x, y] = T(fr.curve[0]); pg.text(x, y + 5, String(fr.n), 6.5, { align: 'center' });
-    }
-    pg.stroke(0.6); pg.dash(4, 2); pg.poly(P.bridge.map(T));
-    { const [x, y] = T(P.nut[0]); pg.text(x, y + 5, 'NUT', 6.5, { align: 'center', bold: true }); }
-    { const [x, y] = T(P.bridge[0]); pg.text(x, y + 5, 'BRIDGE', 6.5, { align: 'center', bold: true }); }
-    for (const s of design.strings) { const [x, y] = T(s.nut); pg.text(x - 6, y - 2, String(s.i + 1), 6, { align: 'right', gray: 0.3 }); }
+    drawBoard(pg, P, design, T);
     pg.stroke(0.5);
     for (const [u, v] of marks) {
       if (u < ua || u > ua + areaW || v < va || v > va + areaH) continue;
@@ -368,4 +384,61 @@ export function exportPDF(design, opts = {}) {
     pages.push(pg.content);
   }
   return { data: buildPDF(PW, PH, pages, title), mime: 'application/pdf', extension: 'pdf', pages: pages.length, tiles: total };
+}
+
+/**
+ * The whole board at true 1:1 on ONE page sized to fit it (for a large-format
+ * plotter or print shop), with scale-check rulers, the per-string fret table
+ * and the design summary below the drawing.
+ */
+export function exportPDFFull(design, opts = {}) {
+  const P = drawingParts(design), b = P.bounds, p = design.params;
+  const title = titleOf(design, opts);
+  const units = p.units === 'mm' ? 'mm' : 'in';
+  const U = v => (units === 'mm' ? v.toFixed(2) : (v / IN).toFixed(4));
+  const M = 12, HEAD = 36, GAP = 10, ROW = 4.6, LINE = 4.2;           // mm
+  const LAB = 14;
+  const u0 = b.minY - LAB, u1 = b.maxY + 6, v0 = b.minX - LAB, v1 = b.maxX + 8;
+  const DW = u1 - u0, DH = v1 - v0;
+  const rows = fretRows(design).slice(1);                             // the nut is always 0
+  const strings = design.strings;
+  const LABW = 22, COLW = 15;
+  const tableW = LABW + rows.length * COLW;
+  const info = infoLines(design);
+  const W = 2 * M + Math.max(DW, tableW, 250);
+  const H = M + HEAD + DH + GAP + 7 + (strings.length + 1) * ROW + 6 + info.length * LINE + M;
+  const PW = W * MM2PT, PH = H * MM2PT;
+  const X = mm => mm * MM2PT, Y = mmFromTop => PH - mmFromTop * MM2PT;   // page points
+  const pg = pdfPage();
+
+  // ---- title block
+  pg.text(X(M), Y(M) - 13, `${title} - FULL-SIZE 1:1`, 14, { bold: true });
+  pg.text(X(M), Y(M) - 25, `Single page, ${W.toFixed(0)} x ${H.toFixed(0)} mm (${(W / IN).toFixed(2)} x ${(H / IN).toFixed(2)} in). Print or plot at 100% / Actual size, no scaling. Nut on the left, treble edge at the top.`, 8, { gray: 0.35 });
+  rulers(pg, X(M), Y(M + 22));
+
+  // ---- 1:1 drawing
+  const left = X(M), top = Y(M + HEAD);
+  drawBoard(pg, P, design, q => [left + (q.y - u0) * MM2PT, top - (q.x - v0) * MM2PT]);
+  pg.stroke(0.3, 0.6); pg.rect(left, Y(M + HEAD + DH), X(DW), X(DH));
+
+  // ---- fret table: one row per string, one column per fret
+  let yy = M + HEAD + DH + GAP;
+  pg.text(X(M), Y(yy), `Distance from the nut to each fret, measured along the string (${units}). String 1 = treble.`, 8, { bold: true });
+  yy += 7;
+  const colX = k => X(M + LABW + (k + 1) * COLW) - 3;
+  pg.text(X(M), Y(yy), 'fret', 7, { bold: true });
+  rows.forEach((r, k) => pg.text(colX(k), Y(yy), r.label, 7, { bold: true, align: 'right' }));
+  pg.stroke(0.5); pg.line(X(M), Y(yy + 1.2), X(M + tableW), Y(yy + 1.2));
+  strings.forEach((s, j) => {
+    yy += ROW;
+    if (j % 2 === 0) pg.fillRect(X(M), Y(yy + 1.3), X(tableW), X(ROW), 0.93);
+    pg.text(X(M), Y(yy), `str ${s.i + 1}${s.note ? ' ' + s.note : ''}`, 7);
+    rows.forEach((r, k) => pg.text(colX(k), Y(yy), U(s.scale * (r.ts?.[s.i] ?? r.t)), 7, { align: 'right' }));
+  });
+
+  // ---- design summary
+  yy += 6;
+  for (const t of info) { yy += LINE; pg.text(X(M), Y(yy), t, 7.5); }
+
+  return { data: buildPDF(PW, PH, [pg.content], title), mime: 'application/pdf', extension: 'pdf', pages: 1, sizeMM: [W, H], suffix: 'full-1to1' };
 }

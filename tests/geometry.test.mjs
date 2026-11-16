@@ -5,7 +5,7 @@ import {
   DEFAULTS, PRESETS, MODES, computeDesign, scaleLengths, scaleProfile, defaultGauges, fitScales,
   importFretFind, encodeParams, decodeParams, fretFraction, seriesSum,
 } from '../src/geometry.js';
-import { exportSVG, exportDXF, exportPDF, exportCSV } from '../src/exports.js';
+import { exportSVG, exportDXF, exportPDF, exportPDFFull, exportCSV } from '../src/exports.js';
 
 const IN = 25.4;
 const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -276,6 +276,19 @@ test('exports produce valid-looking files', () => {
     const entries = s.slice(sx).split('\n').slice(3).filter(l => / 00000 n $/.test(l)).map(l => Number(l.slice(0, 10)));
     entries.forEach((off, i) => assert.ok(s.startsWith(`${i + 1} 0 obj`, off), `object ${i + 1}`));
     assert.ok(pdf.pages >= 2 && /\/Count \d+/.test(s));
+
+    // single-page full-size PDF: one page whose MediaBox holds the whole board at 1:1
+    const full = exportPDFFull(d);
+    const fs = Buffer.from(full.data).toString('latin1');
+    assert.ok(fs.startsWith('%PDF-1.') && fs.trimEnd().endsWith('%%EOF'));
+    assert.equal(full.pages, 1); assert.ok(/\/Count 1 /.test(fs));
+    const fsx = Number(/startxref\n(\d+)/.exec(fs)[1]);
+    fs.slice(fsx).split('\n').slice(3).filter(l => / 00000 n $/.test(l)).map(l => Number(l.slice(0, 10)))
+      .forEach((off, i) => assert.ok(fs.startsWith(`${i + 1} 0 obj`, off), `full object ${i + 1}`));
+    const mb = /\/MediaBox \[0 0 ([\d.]+) ([\d.]+)\]/.exec(fs).slice(1).map(Number);
+    const b = d.strings.reduce((a, q) => Math.max(a, q.bridge.y, q.nut.y), 0) - Math.min(...d.strings.map(q => q.nut.y));
+    assert.ok(mb[0] * 25.4 / 72 > b, 'page is longer than the board');
+    near(mb[0] * 25.4 / 72, full.sizeMM[0], 0.01);
 
     const csv = exportCSV(d).data.trim().split('\r\n');
     assert.equal(csv.length, 1 + d.strings.length * (d.frets.length + 2));
