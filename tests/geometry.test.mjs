@@ -386,6 +386,29 @@ test('tempered: compensation is plausible, frets stay drawable, nothing is an er
   }
 });
 
+test('tempered: strings outside the physics model fall back to the temperament, never blow up', () => {
+  // 8 strings, high action, deep fretting: the low B and F# used to diverge (shifts of ~700 m).
+  for (const extra of [{ actionTreble: 2, actionBass: 3, fingerDepth: 0.49 }, { actionTreble: 1.4, actionBass: 2.6, fingerDepth: 0.36, temperament: 'equal' }]) {
+    const d = computeDesign({ numStrings: 8, numFrets: 22, mode: 'tempered', trebleScale: 642.36, nutSpacing: 9.57, bridgeSpacing: 12.83, ...extra });
+    const sh = d.frets.flatMap(f => f.shifts);
+    assert.ok(sh.every(Number.isFinite) && Math.max(...sh.map(Math.abs)) < 15, `max shift ${Math.max(...sh.map(Math.abs))}`);
+    const skipped = d.tempered.uncompensated;
+    assert.ok(skipped.length > 0 && skipped.every(i => d.tempered.setbacks[i] === 0));
+    assert.ok(d.warnings.some(w => w.level === 'warn' && /No fretting compensation on string/.test(w.message)));
+    // frets stay in order along every string
+    d.strings.forEach((s, i) => d.frets.slice(1).forEach((f, k) => assert.ok(f.ts[i] > d.frets[k].ts[i])));
+  }
+  // the built-in preset is untouched by the guard
+  assert.deepEqual(computeDesign(PRESETS['tempered-6'].params).tempered.uncompensated, []);
+});
+
+test('tempered: with no board extension the last fret never runs past the board end, even at the edges', () => {
+  const d = computeDesign({ numStrings: 7, numFrets: 24, mode: 'tempered', trebleScale: 725.56, nutSpacing: 10.94, bridgeSpacing: 15.37,
+    edgeMargin: 3, boardExtension: 0, perpRatio: 0, temperament: 'tf1', compensate: true, fretStyle: 'smooth', actionTreble: 2.05, actionBass: 2.75, fingerDepth: 0.43 });
+  const lf = d.frets[d.frets.length - 1].curve, ec = d.boardEnd.curve;
+  assert.ok(ec[0].y - lf[0].y >= -1e-9 && ec[ec.length - 1].y - lf[lf.length - 1].y >= -1e-9);
+});
+
 test('tempered: share links round-trip and default links are unchanged', () => {
   const p = { mode: 'tempered', temperament: 'equal', compensate: false, actionTreble: 1.4, actionBass: 2.2, fingerDepth: 0.35, fretStyle: 'smooth' };
   const back = decodeParams(encodeParams(p));

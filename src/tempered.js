@@ -68,16 +68,31 @@ function frettedCents(st, x, S, xPrev, opt) {
   return cents((Math.sqrt(T) / Lv * stiff(T, Lv)) / (Math.sqrt(st.T0) / L0 * stiff(st.T0, L0)));
 }
 
-function solveX(st, n, S, target, xPrev, opt) {
-  let x0 = tet(S, n), x1 = x0 + 0.5;
-  let g0 = frettedCents(st, x0, S, xPrev, opt) - target;
-  for (let k = 0; k < 40; k++) {
-    const g1 = frettedCents(st, x1, S, xPrev, opt) - target;
-    if (Math.abs(g1) < 1e-7 || g1 === g0) break;
-    const x2 = x1 - g1 * (x1 - x0) / (g1 - g0);
-    x0 = x1; g0 = g1; x1 = x2;
+// Compensation never moves a fret more than this from its temperament-only
+// position. A larger answer means the string is outside the model.
+const MAX_COMP_CENTS = 50;
+
+/**
+ * Crown position that sounds `target` cents, searched only within
+ * +-MAX_COMP_CENTS of the temperament-only position [lo, hi]. Secant steps,
+ * kept inside a sign-change bracket (bisection when a step would leave it).
+ * Returns NaN when there is no answer in range (string outside the model).
+ */
+function solveX(st, n, S, target, xPrev, opt, lo, hi) {
+  const g = x => frettedCents(st, x, S, xPrev, opt) - target;
+  let a = lo, b = hi, ga = g(a), gb = g(b);
+  if (!Number.isFinite(ga) || !Number.isFinite(gb) || ga * gb > 0) return NaN;
+  let x0 = Math.min(hi, Math.max(lo, tet(S, n))), g0 = g(x0), x1 = Math.min(hi, x0 + 0.5), g1 = g(x1);
+  for (let k = 0; k < 80; k++) {
+    if (Math.abs(g1) < 1e-7) return x1;
+    // keep the bracket around the root
+    if (ga * g1 < 0) { b = x1; gb = g1; } else { a = x1; ga = g1; }
+    let x2 = g1 !== g0 ? x1 - g1 * (x1 - x0) / (g1 - g0) : NaN;
+    if (!(x2 > a && x2 < b)) x2 = (a + b) / 2;
+    x0 = x1; g0 = g1; x1 = x2; g1 = g(x1);
+    if (b - a < 1e-9) return x1;
   }
-  return x1;
+  return Math.abs(g1) < 1e-4 ? x1 : NaN;
 }
 
 /**
@@ -87,12 +102,13 @@ function solveX(st, n, S, target, xPrev, opt) {
  * Returns { shifts[n-1][i] (mm along the string, + = toward the bridge, vs
  * plain 12-TET on the nominal scale), setbacks[i] (mm), targets[i][n-1]
  * (cents above the open string), plainError[i][n-1] (cents a plain fret
- * would be off after the saddle is set) }.
+ * would be off after the saddle is set), uncompensated (string indexes that
+ * got the temperament only because they fall outside the physics model) }.
  */
 export function temperedLayout(strings, opt) {
   const N = strings.length, F = Math.max(0, opt.numFrets);
   const shifts = Array.from({ length: F }, () => new Array(N).fill(0));
-  const setbacks = new Array(N).fill(0), targets = [], plainError = [];
+  const setbacks = new Array(N).fill(0), targets = [], plainError = [], uncompensated = [];
   strings.forEach((s, i) => {
     const L = s.scale, f0 = 440 * Math.pow(2, (s.midi - 69) / 12);
     const T0 = Math.max(s.tensionN, 1e-3);
@@ -106,28 +122,37 @@ export function temperedLayout(strings, opt) {
     const tg = [], pe = [];
     for (let n = 1; n <= F; n++) tg.push(100 * n + noteOffset(opt.temperament, s.midi + n) - open);
     targets.push(tg);
-    // Very slack strings (extreme extended-range tunings) fall outside the model: temperament only.
-    if (!opt.compensate || s.tensionN < 5) {
-      // Ideal string: the speaking length alone sets the pitch.
+    // Ideal string: the speaking length alone sets the pitch (temperament only).
+    const temperamentOnly = () => {
       for (let n = 1; n <= F; n++) shifts[n - 1][i] = L * (1 - Math.pow(2, -tg[n - 1] / 1200)) - tet(L, n);
+      setbacks[i] = 0;
       plainError.push(new Array(F).fill(0));
-      return;
-    }
+    };
+    // Very slack strings (extreme extended-range tunings) fall outside the model: temperament only.
+    if (!opt.compensate || s.tensionN < 5) { temperamentOnly(); if (opt.compensate) uncompensated.push(i); return; }
     // Saddle: set back until a plain 12th fret plays a true octave (a normal setup).
     let S = L;
     if (F >= 12) for (let k = 0; k < 30; k++) S += (frettedCents(st, tet(L, 12), S, tet(L, 11), opt) - 1200) * S * Math.LN2 / 1200;
     else for (let k = 0; k < 30; k++) { const m = Math.max(1, F); S += (frettedCents(st, tet(L, m), S, tet(L, m - 1), opt) - 100 * m) * S * Math.LN2 / 1200; }
+    // Heavy, slack or high-action strings can push the model past anything a
+    // real setup does (the setup does not converge, or wants a saddle set back
+    // more than 5% of the scale). Those strings get the temperament only.
+    if (!Number.isFinite(S) || S - L < -0.01 * L || S - L > 0.05 * L) { temperamentOnly(); uncompensated.push(i); return; }
     setbacks[i] = S - L;
+    const at = c => L * (1 - Math.pow(2, -c / 1200));
+    const xs = [];
     let xp = 0, xq = 0;
     for (let n = 1; n <= F; n++) {
       const xPlain = tet(L, n);
       pe.push(frettedCents(st, xPlain, S, xq, opt) - 100 * n); xq = xPlain;
-      const x = solveX(st, n, S, tg[n - 1], xp, opt);
-      shifts[n - 1][i] = x - xPlain; xp = x;
+      const x = solveX(st, n, S, tg[n - 1], xp, opt, at(tg[n - 1] - MAX_COMP_CENTS), at(tg[n - 1] + MAX_COMP_CENTS));
+      if (!Number.isFinite(x)) { temperamentOnly(); uncompensated.push(i); return; }
+      xs.push(x); xp = x;
     }
+    xs.forEach((x, k) => { shifts[k][i] = x - tet(L, k + 1); });
     plainError.push(pe);
   });
-  return { shifts, setbacks, targets, plainError };
+  return { shifts, setbacks, targets, plainError, uncompensated };
 }
 
 // C2 blend 0 -> 1 (smootherstep). Peak |y''| = 10/sqrt(3) for unit width.

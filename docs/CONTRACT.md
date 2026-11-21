@@ -82,5 +82,5 @@ Fret positions use 12-TET: on each string, fret `n` sits at fraction `1 - 2^(-n/
 `mode: 'tempered'` is a single-scale board with True-Temperament-style frets. Every other mode ignores the tempered params and runs exactly as before. Each fret is shifted separately under each string (temperament target in cents, plus optional fretting compensation), so in this mode only:
 
 - `frets[n].ts[i]` is the fraction along string `i` (in place of the shared `t`), and `frets[n].shifts[i]` is the mm shift from plain 12-TET (+ toward the bridge).
-- `design.tempered = { temperament, compensate, fretStyle, setbacks[], targets[][], plainError[][] }`. `setbacks` are saddle setbacks in mm from the scale line.
+- `design.tempered = { temperament, compensate, fretStyle, setbacks[], targets[][], plainError[][], uncompensated[] }`. `setbacks` are saddle setbacks in mm from the scale line. `uncompensated` lists string indexes where the fretting-compensation model has no realistic answer (it would move a fret more than 50 cents, or set a saddle back more than 5% of the scale). Those strings get the temperament only, a setback of 0, and a warning.
 - Exporters read `fr.ts?.[i] ?? fr.t`. Bend-radius warnings are replaced, because tempered frets are cast or milled, not bent.

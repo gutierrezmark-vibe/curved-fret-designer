@@ -476,6 +476,7 @@ export function computeDesign(params = {}) {
   const tmp = tempered ? temperedLayout(strings, { ...p, numFrets: p.numFrets }) : null;
   const L0 = scales[0] || 1;
   const frets = [];
+  let lastFretPush = 0;   // tempered: furthest the last fret reaches past its plain position, edge to edge (mm)
   for (let n = 1; n <= p.numFrets; n++) {
     const t = fretFraction(n);
     let tOf = () => t, ts;
@@ -487,12 +488,15 @@ export function computeDesign(params = {}) {
     const line = traceLine(tOf);
     const fr = withEval({ n, t, perpSide: Math.sign(Math.round((t - r) * 1e9)), crossings: line.crossings, curve: line.curve, ...analyse(tOf, line) }, line, tOf);
     if (ts) { fr.ts = ts; fr.shifts = tmp.shifts[n - 1].slice(); }
+    if (tmp && n === p.numFrets) lastFretPush = Math.max(0, ...line.ss.map(s => (tOf(s) - t) * L0));
     frets.push(fr);
   }
   const mk = t => { const tOf = () => t, line = traceLine(tOf); return withEval({ crossings: line.crossings, curve: line.curve, ...analyse(tOf, line) }, line, tOf); };
   const nut = mk(0), bridge = mk(1);
   const tLast = fretFraction(p.numFrets);
-  const lastPush = tmp && p.numFrets ? Math.max(0, ...tmp.shifts[p.numFrets - 1]) : 0;
+  // A tempered last fret wiggles, and its shape carries on past the outer
+  // strings to the board edges, so clear it everywhere, not just at the strings.
+  const lastPush = tmp && p.numFrets ? Math.max(lastFretPush, ...tmp.shifts[p.numFrets - 1]) : 0;
   const endOf = s => tLast + (p.boardExtension + lastPush) / Math.max(prof.at(s), 1);
   const endLine = traceLine(endOf);
   const boardEnd = withEval({ curve: endLine.curve, crossings: endLine.crossings }, endLine, endOf);
@@ -500,6 +504,10 @@ export function computeDesign(params = {}) {
 
   // Widths at the nut and bridge (edge to edge, along x).
   const widths = { nut: last * p.nutSpacing + 2 * m, bridge: last * p.bridgeSpacing + 2 * m };
+  // One string and no edge margin leaves a board with no width: every fret is a
+  // single point, which CAD and CAM programs reject in the DXF.
+  if (Math.min(widths.nut, widths.bridge) < 1)
+    warnings.push({ level: 'warn', message: `The board is only ${Math.min(widths.nut, widths.bridge).toFixed(2)} mm wide, so the frets have almost no length. Set the edge margin above 0 for a usable board.` });
 
   // Metrics.
   let maxSag = 0, maxSagFret = null, minR = Infinity, minRFret = null, inflecting = 0;
@@ -570,7 +578,10 @@ export function computeDesign(params = {}) {
     const big = Math.max(0, ...tmp.shifts.flat().map(Math.abs));
     warnings.push({ level: 'info', message: `Tempered frets: largest shift ${big.toFixed(2)} mm from a plain fret. They are cast or milled (True Temperament casts them), not bent from standard fret wire.` });
     if (minR < 1.5) warnings.push({ level: 'warn', message: `Fret ${minRFret} turns through a ${minR.toFixed(1)} mm radius between strings, tighter than a fret crown is wide. Widen the string spacing or use the smooth fret style.` });
-    if (p.compensate) warnings.push({ level: 'info', message: `Fretting compensation is a physics estimate (action ${p.actionTreble.toFixed(1)}-${p.actionBass.toFixed(1)} mm, finger depth ${p.fingerDepth.toFixed(2)} mm, steel strings). True Temperament measures each note instead. Set the saddles back ${Math.min(...tmp.setbacks).toFixed(1)}-${Math.max(...tmp.setbacks).toFixed(1)} mm.` });
+    const skipped = tmp.uncompensated || [];
+    const comp = tmp.setbacks.filter((_, i) => !skipped.includes(i));
+    if (p.compensate && comp.length) warnings.push({ level: 'info', message: `Fretting compensation is a physics estimate (action ${p.actionTreble.toFixed(1)}-${p.actionBass.toFixed(1)} mm, finger depth ${p.fingerDepth.toFixed(2)} mm, steel strings). True Temperament measures each note instead. Set the saddles back ${Math.min(...comp).toFixed(1)}-${Math.max(...comp).toFixed(1)} mm.` });
+    if (p.compensate && skipped.length) warnings.push({ level: 'warn', message: `No fretting compensation on ${skipped.length === 1 ? 'string' : 'strings'} ${skipped.map(i => `${i + 1} (${strings[i].note})`).join(', ')}: at this action and finger depth the physics model gives no realistic answer for ${skipped.length === 1 ? 'it' : 'them'}, so ${skipped.length === 1 ? 'its' : 'their'} frets use the temperament only. Set ${skipped.length === 1 ? 'that saddle' : 'those saddles'} by ear. Lower action or finger depth may bring ${skipped.length === 1 ? 'it' : 'them'} back into range.` });
   }
   if (userTuning) strings.forEach(st => {
     if (st.tensionLb < 10 || st.tensionLb > 32) warnings.push({ level: 'info', message: `String ${st.i + 1} (${st.note}, ${st.gauge}) is about ${st.tensionLb.toFixed(1)} lb, outside 10-32 lb.` });
@@ -580,7 +591,7 @@ export function computeDesign(params = {}) {
     params: p, strings, frets, nut, bridge, boardEnd, outline, widths, metrics, warnings,
     profile: { kind: prof.kind, pivot: prof.pivot, solved: prof.solved, junction: prof.junction, at: prof.at, samples, secondDiff },
     edges: { treble: [edgeT.a, edgeT.b], bass: [edgeB.a, edgeB.b] },
-    ...(tmp ? { tempered: { temperament: p.temperament, compensate: p.compensate, fretStyle: p.fretStyle, setbacks: tmp.setbacks, targets: tmp.targets, plainError: tmp.plainError } } : {}),
+    ...(tmp ? { tempered: { temperament: p.temperament, compensate: p.compensate, fretStyle: p.fretStyle, setbacks: tmp.setbacks, targets: tmp.targets, plainError: tmp.plainError, uncompensated: tmp.uncompensated } } : {}),
   };
 }
 
