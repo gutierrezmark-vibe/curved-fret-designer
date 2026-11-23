@@ -439,3 +439,81 @@ test('exports: an optional date is stamped into every title, and nothing changes
   assert.equal(exportSVG(d).data, exportSVG(d, {}).data);
   assert.ok(!exportSVG(d).data.includes(date));
 });
+
+// ---------------------------------------------------------------------------
+// Left-handed boards: the exact mirror image of the right-handed board.
+
+import { mirrorDesign, bassSide } from '../src/geometry.js';
+import { smoothCurves } from '../src/exports.js';
+
+const LH_CASES = [...CASES, ['tempered', { mode: 'tempered', numStrings: 6, trebleScale: 25.5 * IN }], ['one string', { numStrings: 1, mode: 'single' }]];
+const mirrored = (a, b, tol = 1e-9) => near(a.x, -b.x, tol, 'x') || near(a.y, b.y, tol, 'y');
+
+test('left-handed design mirrors every point across the centreline', () => {
+  for (const [name, params] of LH_CASES) {
+    const R = computeDesign(params), L = computeDesign({ ...params, handed: 'left' });
+    assert.equal(L.params.handed, 'left', name);
+    assert.equal(bassSide(R), 1); assert.equal(bassSide(L), -1);
+    R.strings.forEach((s, i) => { mirrored(L.strings[i].nut, s.nut); mirrored(L.strings[i].bridge, s.bridge); near(L.strings[i].scale, s.scale, 1e-12, name); });
+    for (const k of ['nut', 'bridge', 'boardEnd']) R[k].curve.forEach((q, j) => mirrored(L[k].curve[j], q));
+    R.frets.forEach((f, i) => {
+      const g = L.frets[i];
+      f.curve.forEach((q, j) => mirrored(g.curve[j], q));
+      f.crossings.forEach((q, j) => mirrored(g.crossings[j], q));
+      for (const s of [f.sRange[0], (f.sRange[0] + f.sRange[1]) / 2, f.sRange[1]]) mirrored(g.at(s), f.at(s));
+      assert.equal(g.signedSagitta, f.signedSagitta, `${name}: bow direction keeps its meaning`);
+    });
+    R.outline.forEach((q, j) => mirrored(L.outline[j], q));
+    mirrored(L.edges.treble[0], R.edges.treble[0]); mirrored(L.edges.bass[1], R.edges.bass[1]);
+    assert.deepEqual(L.metrics, R.metrics, name);
+    assert.deepEqual(L.warnings, R.warnings, name);
+    assert.deepEqual(L.widths, R.widths, name);
+  }
+});
+
+test('mirrorDesign is its own inverse and handed survives share links', () => {
+  const L = computeDesign({ handed: 'left' }), RR = mirrorDesign(L), R = computeDesign({});
+  R.frets[5].curve.forEach((q, j) => mirrored(RR.frets[5].curve[j], { x: -q.x, y: q.y }));
+  assert.equal(computeDesign({ handed: 'sideways' }).params.handed, 'right');
+  assert.match(encodeParams({ ...DEFAULTS, handed: 'left' }), /h=left/);
+  assert.doesNotMatch(encodeParams({ ...DEFAULTS }), /h=/);
+  assert.equal(decodeParams(encodeParams({ handed: 'left' })).handed, 'left');
+});
+
+test('left-handed exports are the mirrored board with readable labels', () => {
+  for (const [name, params] of [['defaults', {}], ['tempered', { mode: 'tempered', numStrings: 7 }]]) {
+    const R = computeDesign(params), L = computeDesign({ ...params, handed: 'left' });
+    // DXF: same entity counts, one spline per fret, within 0.001 mm, and labelled.
+    const dr = exportDXF(R), dl = exportDXF(L);
+    const count = (s, t) => (s.match(new RegExp(`^ *0\\r?\\n${t}\\r?$`, 'gm')) || []).length;
+    for (const t of ['SPLINE', 'LINE', 'TEXT']) assert.equal(count(dl.data, t), count(dr.data, t), `${name} ${t}`);
+    assert.equal(count(dl.data, 'SPLINE'), L.frets.length + 4, name);   // outline nut + board end, NUT layer, every fret, bridge
+    assert.ok(dl.splines && dl.maxDeviationMm <= 0.001, `${name} deviation ${dl.maxDeviationMm}`);
+    assert.match(dl.data, /LEFT-HANDED/);
+    // Smooth curves pass through the mirrored string crossings.
+    const sm = smoothCurves(L);
+    assert.ok(sm.ok && sm.maxErr <= 0.001, name);
+    // Labels sit above the top edge (the bass edge on a lefty): fret number y in
+    // the SVG is above the top end of its fret.
+    const svg = exportSVG(L).data;
+    assert.match(svg, /bass edge at the top \(LEFT-HANDED\)/);
+    const yNum = [...svg.matchAll(/<text x="[^"]+" y="([^"]+)">1<\/text>/g)].map(m => +m[1])[0];
+    const xs = L.outline.map(q => q.x), minX = Math.min(...xs, ...L.bridge.curve.map(q => q.x), ...L.strings.flatMap(s => [s.nut.x, s.bridge.x]));
+    const top = Math.min(L.frets[0].curve[0].x, L.frets[0].curve.at(-1).x);
+    assert.ok(yNum < (top - minX + 15) * 96 / 25.4, `${name}: fret label above the board`);
+    // CSV x is mirrored, positions along the string are identical.
+    const cr = exportCSV(R).data.split('\n'), cl = exportCSV(L).data.split('\n');
+    assert.equal(cl.length, cr.length);
+    const c3 = cr[3].split(','), l3 = cl[3].split(',');
+    assert.equal(l3[6], c3[6]); near(+l3[8], -c3[8], 1e-3, 'csv x');
+    // PDFs build.
+    assert.ok(exportPDF(L).data.length > 1000 && exportPDFFull(L).data.length > 1000, name);
+  }
+});
+
+test('right-handed exports are unchanged by the handedness option', () => {
+  const R = computeDesign({}), R2 = computeDesign({ handed: 'right' });
+  assert.equal(exportDXF(R).data, exportDXF(R2).data);
+  assert.doesNotMatch(exportSVG(R).data, /LEFT-HANDED/);
+  assert.match(exportSVG(R).data, /treble edge at the top\./);
+});

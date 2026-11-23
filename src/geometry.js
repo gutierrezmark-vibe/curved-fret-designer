@@ -4,7 +4,9 @@
 // Conventions (see docs/CONTRACT.md and docs/MATH.md):
 //   * All geometry is in millimetres. Inches are display only.
 //   * String i = 0 is the treble string, i = N-1 the bass string.
-//   * x = 0 is the board centreline, +x toward the bass side.
+//   * x = 0 is the board centreline, +x toward the bass side (right-handed).
+//     A left-handed design (params.handed = 'left') is the exact mirror image:
+//     every x is negated, so +x is toward the TREBLE side. See mirrorDesign().
 //   * y = 0 is the perpendicular line (fraction perpRatio along every string),
 //     +y toward the bridge, so the nut sits at negative y.
 //   * `scale` is measured ALONG the string, nut point to bridge point.
@@ -59,6 +61,7 @@ export const DEFAULTS = Object.freeze({
   actionBass: 2.0,
   fingerDepth: 0.2,     // how far the finger pushes the string below the crown, mm
   fretStyle: 'segments', // 'segments' (flat under each string) | 'smooth' (spline)
+  handed: 'right',      // 'right' | 'left' (left = mirror image across the centreline)
 });
 
 // ---------------------------------------------------------------------------
@@ -119,6 +122,7 @@ export function resolveParams(params = {}) {
   p.temperament = p.temperament === 'equal' ? 'equal' : 'tf1';
   p.compensate = p.compensate !== false && p.compensate !== 0 && p.compensate !== '0';
   p.fretStyle = p.fretStyle === 'smooth' ? 'smooth' : 'segments';
+  p.handed = p.handed === 'left' ? 'left' : 'right';
   for (const k of ['actionTreble', 'actionBass', 'fingerDepth']) p[k] = clamp(num(p[k], DEFAULTS[k]), 0, 10);
   return p;
 }
@@ -587,13 +591,51 @@ export function computeDesign(params = {}) {
     if (st.tensionLb < 10 || st.tensionLb > 32) warnings.push({ level: 'info', message: `String ${st.i + 1} (${st.note}, ${st.gauge}) is about ${st.tensionLb.toFixed(1)} lb, outside 10-32 lb.` });
   });
 
-  return {
+  const design = {
     params: p, strings, frets, nut, bridge, boardEnd, outline, widths, metrics, warnings,
     profile: { kind: prof.kind, pivot: prof.pivot, solved: prof.solved, junction: prof.junction, at: prof.at, samples, secondDiff },
     edges: { treble: [edgeT.a, edgeT.b], bass: [edgeB.a, edgeB.b] },
     ...(tmp ? { tempered: { temperament: p.temperament, compensate: p.compensate, fretStyle: p.fretStyle, setbacks: tmp.setbacks, targets: tmp.targets, plainError: tmp.plainError, uncompensated: tmp.uncompensated } } : {}),
   };
+  // Left-handed: the same board mirrored across the centreline. Everything is
+  // computed right-handed (so the maths, metrics and warnings are identical)
+  // and only the coordinates are flipped. signedSagitta keeps its meaning
+  // (> 0 bows toward the bridge) because it is measured before the flip.
+  return p.handed === 'left' ? mirrorDesign(design) : design;
 }
+
+// ---------------------------------------------------------------------------
+// Handedness
+
+const MX = q => (q ? { ...q, x: -q.x } : q);
+const MXS = a => (Array.isArray(a) ? a.map(MX) : a);
+function mirrorCurve(c) {
+  if (!c) return c;
+  const out = { ...c, curve: MXS(c.curve), crossings: MXS(c.crossings) };
+  if (c.inflectionPoints) out.inflectionPoints = MXS(c.inflectionPoints);
+  if (typeof c.at === 'function') { const at = c.at; Object.defineProperty(out, 'at', { value: s => MX(at(s)), enumerable: false }); }
+  return out;
+}
+
+/**
+ * Mirror a design across the centreline (x -> -x). Turns a right-handed board
+ * into the left-handed one and back again (it is its own inverse). String order,
+ * curve order (treble end first) and every non-positional value are unchanged;
+ * edges.treble is still the treble edge, now on the other side.
+ */
+export function mirrorDesign(d) {
+  return {
+    ...d,
+    strings: d.strings.map(st => ({ ...st, nut: MX(st.nut), bridge: MX(st.bridge) })),
+    frets: d.frets.map(mirrorCurve),
+    nut: mirrorCurve(d.nut), bridge: mirrorCurve(d.bridge), boardEnd: mirrorCurve(d.boardEnd),
+    outline: MXS(d.outline),
+    edges: d.edges && { treble: MXS(d.edges.treble), bass: MXS(d.edges.bass) },
+  };
+}
+
+/** +1 for a right-handed design, -1 for a left-handed one (sign of x toward the bass side). */
+export function bassSide(d) { return d?.params?.handed === 'left' ? -1 : 1; }
 
 // ---------------------------------------------------------------------------
 // Fitting measured scales to the formula modes (reverse engineering)
@@ -854,7 +896,7 @@ const KEYS = [
   ['pr', 'perpRatio', 'n'], ['ns', 'nutSpacing', 'n'], ['bs', 'bridgeSpacing', 'n'],
   ['em', 'edgeMargin', 'n'], ['ext', 'boardExtension', 'n'], ['ga', 'gauges', 'a'], ['tu', 'tuning', 't'],
   ['te', 'temperament', 's'], ['cp', 'compensate', 'b'], ['ac', 'actionTreble', 'n'], ['ab', 'actionBass', 'n'],
-  ['fd', 'fingerDepth', 'n'], ['fs', 'fretStyle', 's'],
+  ['fd', 'fingerDepth', 'n'], ['fs', 'fretStyle', 's'], ['h', 'handed', 's'],
 ];
 const fmt = v => String(+(+v).toFixed(4));
 const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);

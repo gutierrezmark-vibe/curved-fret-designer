@@ -307,6 +307,10 @@ function buildLayoutParams() {
   const host = $('layoutParams'); host.innerHTML = '';
   sliders = sliders.filter(s => !s.layout);
   const add = (c, parent = host) => { parent.appendChild(c.el); c.layout = true; sliders.push(c); };
+  host.appendChild(createSegment([
+    { value: 'right', label: 'Right-handed', title: 'Bass strings on the +x side (standard)' },
+    { value: 'left', label: 'Left-handed', title: 'The same board mirrored across the centreline. Previews and every export (SVG, DXF, PDF, CSV) are the true left-handed board.' },
+  ], () => S.params.handed, v => { setParam('handed', v); schedule({ final: true, reframe: true }); }, { cls: 'small' }).el);
   const r0 = h('div', 'row2'); host.appendChild(r0);
   add(numSlider('numStrings', 'Strings', 1, 24, 1, { kind: 'int', dp: 0, hardMin: 1, hardMax: 200, hint: 'No maximum: type any number.' }), r0);
   add(numSlider('numFrets', 'Frets', 0, 36, 1, { kind: 'int', dp: 0, hardMin: 0, hardMax: 60 }), r0);
@@ -533,7 +537,7 @@ async function doExport(fmt) {
     if (typeof r === 'string' || r instanceof Uint8Array || r instanceof Blob) r = { data: r };
     const mime = r.mime || { svg: 'image/svg+xml', dxf: 'application/dxf', pdf: 'application/pdf', pdf1: 'application/pdf', csv: 'text/csv' }[fmt];
     const p = S.params, sr = S.design.metrics.scaleRange;
-    const name = r.filename || `curved-frets-${p.numStrings}str-${p.mode}-${(sr[0] / IN).toFixed(2)}-${(sr[1] / IN).toFixed(2)}in-${stamp.file}${r.suffix ? '-' + r.suffix : ''}.${r.extension || fmt}`;
+    const name = r.filename || `curved-frets-${p.numStrings}str-${p.handed === 'left' ? 'LH-' : ''}${p.mode}-${(sr[0] / IN).toFixed(2)}-${(sr[1] / IN).toFixed(2)}in-${stamp.file}${r.suffix ? '-' + r.suffix : ''}.${r.extension || fmt}`;
     const blob = r.data instanceof Blob ? r.data : new Blob([r.data], { type: mime });
     const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name;
     document.body.appendChild(a); a.click(); a.remove();

@@ -10,6 +10,7 @@ import {
   makeHardwareMaterials, makeBackdropTexture, setMaxAnisotropy,
 } from './materials.js';
 import { buildBody } from './render/body.js';
+import { mirrorDesign } from './geometry.js';
 import { createPost } from './render/post.js';
 import { createContactShadow } from './render/contact.js';
 
@@ -486,7 +487,15 @@ export function create3D(canvas, { onStats } = {}) {
   let design = null, frame = null, showStrings = true, overlay = true;
   mats.bead = new THREE.MeshBasicMaterial({ color: new THREE.Color(0x7fd0ff).multiplyScalar(1.7), toneMapped: false });
   mats.perp = new THREE.MeshBasicMaterial({ color: new THREE.Color(0xffd9a0).multiplyScalar(2.2), transparent: true, opacity: 0.55, depthWrite: false, toneMapped: false });
+  // Left-handed designs arrive mirrored in x. The model (body, side dots,
+  // vents, jack...) is built from the right-handed twin and the whole root is
+  // mirrored, so the lefty scene is an exact mirror image of the righty one.
+  // Framing points and non-flat camera directions are mirrored to match.
+  let HX = 1;
   function build(d, { animate = false } = {}) {
+    HX = d.params?.handed === 'left' ? -1 : 1;
+    if (HX < 0) d = mirrorDesign(d);
+    root.scale.x = HX;
     design = d;
     const N = d.strings.length;
     tweens = [];
@@ -670,7 +679,7 @@ export function create3D(canvas, { onStats } = {}) {
     // --- framing data, lights, ground shadow
     // Silhouette sample points (root space) for tight framing.
     const pts = [];
-    const addP = (x, h, y) => pts.push(new THREE.Vector3(x, h, -y));
+    const addP = (x, h, y) => pts.push(new THREE.Vector3(HX * x, h, -y));
     for (const p of d.outline) { addP(p.x, 0.5, p.y); addP(p.x, -BOARD_T - NECK_DEPTH, p.y); }
     for (const s of d.strings) addP(s.nut.x, 0, s.nut.y - HEAD_LEN);
     const step = Math.max(1, Math.floor(body.outline.length / 60));
@@ -678,8 +687,8 @@ export function create3D(canvas, { onStats } = {}) {
     d.strings.forEach((s, i) => { const e = along(s, dirs[i], sl - 4.5 + BARREL_LEN + 3.2); addP(e.x, BODY_TOP + 2 * rb + 0.5, e.y); addP(e.x, BODY_TOP, e.y); });
     const box = new THREE.Box3().setFromPoints(pts);
     const boardBox = new THREE.Box3();
-    for (const p of d.outline) boardBox.expandByPoint(new THREE.Vector3(p.x, 0, -p.y));
-    for (const s of d.strings) { boardBox.expandByPoint(new THREE.Vector3(s.bridge.x, 0, -(s.bridge.y + 34))); boardBox.expandByPoint(new THREE.Vector3(s.nut.x, 0, -(s.nut.y - HEAD_LEN))); }
+    for (const p of d.outline) boardBox.expandByPoint(new THREE.Vector3(HX * p.x, 0, -p.y));
+    for (const s of d.strings) { boardBox.expandByPoint(new THREE.Vector3(HX * s.bridge.x, 0, -(s.bridge.y + 34))); boardBox.expandByPoint(new THREE.Vector3(HX * s.nut.x, 0, -(s.nut.y - HEAD_LEN))); }
     // Anchor the instrument so its centre stays put in the world when the
     // design shifts (e.g. moving the perpendicular moves y = 0 along the board).
     const zOff = -boardBox.getCenter(new THREE.Vector3()).z, shift = new THREE.Vector3(0, 0, zOff);
@@ -694,7 +703,7 @@ export function create3D(canvas, { onStats } = {}) {
     const boardPts = pts.slice(0, d.outline.length * 2);
     frame = {
       box: boardBox, full: box, pts, boardPts, center: boardBox.getCenter(new THREE.Vector3()), size: boardBox.getSize(new THREE.Vector3()),
-      bridge: new THREE.Vector3(bridgeC.x, 2, -(bridgeC.y + 10) + zOff),
+      bridge: new THREE.Vector3(HX * bridgeC.x, 2, -(bridgeC.y + 10) + zOff),
       macro: fret7 ? new THREE.Vector3(0, 1, -fret7.curve[Math.floor(fret7.curve.length / 2)].y + zOff) : boardBox.getCenter(new THREE.Vector3()),
       nutZ: -d.nut.curve[Math.floor(d.nut.curve.length / 2)].y + zOff,
       features: body.features, bodySimple: body.plan.simple,
@@ -788,7 +797,9 @@ export function create3D(canvas, { onStats } = {}) {
   }
   function viewPose(name) {
     const v = VIEWS[name] || VIEWS.hero;
-    const dir = new THREE.Vector3(...v.dir).normalize();
+    const dir = new THREE.Vector3(...v.dir);
+    if (!v.flat) dir.x *= HX;      // lefty: mirror the shot (flat plan views keep the nut on the left)
+    dir.normalize();
     let target, dist;
     if (name === 'macro') {
       target = frame.macro.clone();

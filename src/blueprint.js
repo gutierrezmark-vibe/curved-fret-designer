@@ -1,5 +1,6 @@
 // blueprint.js — top-down technical drawing of a Design (SVG, cyan on navy).
-// Drawing frame: X = design y (nut left, bridge right), Y = design x (treble top, bass bottom).
+// Drawing frame: X = design y (nut left, bridge right), Y = design x (treble top, bass bottom;
+// a left-handed design is mirrored in x, so its bass edge is on top).
 import { fmtLen, fmtRadius, perpFret } from './ui/units.js';
 
 const NS = 'http://www.w3.org/2000/svg';
@@ -96,6 +97,7 @@ export function createBlueprint(container, { onHover } = {}) {
 
     gMain.innerHTML = '';
     const fs = 10.5 * k, d = vd, N = d.strings.length, SG = flip ? -1 : 1;
+    const HS = d.params?.handed === 'left' ? -1 : 1;   // mirrored board: the string dimensions swap sides
     const g = (cls) => el('g', { class: cls }, gMain);
     const text = (parent, x, y, str, attrs = {}) => { const t = el('text', { x, y, 'font-size': fs, ...attrs }, parent); t.textContent = str; return t; };
 
@@ -174,8 +176,8 @@ export function createBlueprint(container, { onHover } = {}) {
       t.setAttribute('y', my + out * 4 * k);
     };
     const s0 = d.strings[0], sN = d.strings[N - 1];
-    dimAlong(s0, -1, `${N > 1 ? 'TREBLE  ' : 'SCALE  '}${fmtLen(s0.scale, units)}`);
-    if (N > 1) dimAlong(sN, 1, `BASS  ${fmtLen(sN.scale, units)}`);
+    dimAlong(s0, -HS, `${N > 1 ? 'TREBLE  ' : 'SCALE  '}${fmtLen(s0.scale, units)}`);
+    if (N > 1) dimAlong(sN, HS, `BASS  ${fmtLen(sN.scale, units)}`);
     const dimAcross = (curve, side, label) => {
       const a = curve[0], b = curve[curve.length - 1];
       const X = (side < 0 ? Math.min(a.y, b.y) : Math.max(a.y, b.y)) + side * Math.max(8, 26 * k);
@@ -195,7 +197,7 @@ export function createBlueprint(container, { onHover } = {}) {
     // title block
     const sr = d.metrics?.scaleRange || [s0.scale, sN.scale];
     block.innerHTML = `<div class="tb-row"><span class="tb-k">DWG</span><span class="tb-v">CFD-${String(N).padStart(2, '0')}-${String(d.frets.length).padStart(2, '0')}</span></div>
-      <div class="tb-row"><span class="tb-k">MODE</span><span class="tb-v">${(d.params.mode || '').toUpperCase()}</span></div>
+      <div class="tb-row"><span class="tb-k">MODE</span><span class="tb-v">${(d.params.mode || '').toUpperCase()}${HS < 0 ? '  ·  LEFT-HANDED' : ''}</span></div>
       <div class="tb-row"><span class="tb-k">SCALE</span><span class="tb-v">${fmtLen(sr[0], units)} – ${fmtLen(sr[1], units)}</span></div>
       <div class="tb-row"><span class="tb-k">KEY</span><span class="tb-v"><i class="lg sn"></i>nut side <i class="lg sp"></i>bridge side <i class="lg in"></i>inflection</span></div>
       <div class="tb-row"><span class="tb-k">VIEW</span><span class="tb-v">${flip ? 'TOP 180° · nut right' : 'TOP · nut left'}</span></div>

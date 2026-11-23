@@ -56,6 +56,7 @@ export function sanitizeParams(raw, G) {
   if (Array.isArray(raw.tuning) && raw.tuning.length >= 1 && raw.tuning.length <= 200
     && raw.tuning.every(v => (typeof v === 'string' && NOTE_RE.test(v)) || (Number.isInteger(v) && v >= 0 && v <= 127)))
     out.tuning = raw.tuning.slice();
+  if (raw.handed === 'left' || raw.handed === 'right') out.handed = raw.handed;
   if (!Object.keys(out).length) return null;
   try { return G.resolveParams ? G.resolveParams(out) : { ...G.DEFAULTS, ...out }; } catch { return null; }
 }

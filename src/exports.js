@@ -4,9 +4,11 @@
 // The UI turns that into a Blob and a download.
 //
 // Drawing frame shared by SVG, DXF and PDF: the board lies horizontally with
-// the nut on the LEFT and the treble edge at the TOP, at true 1:1 scale.
+// the nut on the LEFT and the treble edge at the TOP, at true 1:1 scale. A
+// left-handed design is already mirrored in design x, so the same frame puts
+// its BASS edge at the top: the exports are the true lefty board, not a flip.
 //   along  = design y (mm, nut -> bridge)
-//   across = design x (mm, treble -> bass)
+//   across = design x (mm, top edge -> bottom edge)
 
 import { curveSpline, mapSpline, toBeziers, dxfR2000 } from './cad.js';
 
@@ -23,7 +25,7 @@ function titleOf(design, opts) {
   const p = design.params, n = p.numStrings, u = p.units;
   const [a, b] = design.metrics.scaleRange;
   const L = v => (u === 'mm' ? `${v.toFixed(1)} mm` : `${(v / IN).toFixed(3)}"`);
-  return `${n}-string ${p.mode} ${L(a)}${n > 1 && b - a > 1e-6 ? ' - ' + L(b) : ''}${stamp}`;
+  return `${n}-string ${p.handed === 'left' ? 'LEFT-HANDED ' : ''}${p.mode} ${L(a)}${n > 1 && b - a > 1e-6 ? ' - ' + L(b) : ''}${stamp}`;
 }
 
 /**
@@ -43,6 +45,12 @@ export function smoothCurves(design, tol = 0.001) {
   out.ok = all.length === design.frets.length + 3;
   return out;
 }
+
+/** Which edge of the drawing is on top (the frame puts design -x at the top). */
+const topEdgeName = design => (design.params?.handed === 'left' ? 'bass' : 'treble');
+const frameNote = design => `Nut on the left, ${topEdgeName(design)} edge at the top${design.params?.handed === 'left' ? ' (LEFT-HANDED)' : ''}.`;
+/** The end of a curve on the top edge of the drawing (smallest design x), for labels. */
+const topEnd = pts => (pts[0].x <= pts[pts.length - 1].x ? pts[0] : pts[pts.length - 1]);
 
 /** All the lines of the top view, in design coordinates. */
 function drawingParts(design) {
@@ -91,7 +99,7 @@ export function exportSVG(design, opts = {}) {
   out.push('<?xml version="1.0" encoding="UTF-8"?>');
   out.push(`<svg xmlns="http://www.w3.org/2000/svg" width="${f3(W)}mm" height="${f3(H)}mm" viewBox="0 0 ${px(W)} ${px(H)}">`);
   out.push(`<title>${esc(title)}</title>`);
-  out.push('<desc>Curved Fret Designer top-view template at 1:1. Size is in mm; user units are px at 96 per inch. Nut on the left, treble edge at the top.</desc>');
+  out.push(`<desc>Curved Fret Designer top-view template at 1:1. Size is in mm; user units are px at 96 per inch. ${esc(frameNote(design))}</desc>`);
   out.push('<g fill="none" stroke="#000" stroke-linecap="round" stroke-linejoin="round">');
   out.push(`<g id="centreline" stroke="#999" stroke-width="${px(0.15)}">${poly(P.centre, '')}</g>`);
   out.push(`<g id="strings" stroke="#999" stroke-width="${px(0.12)}">${P.strings.map(s => poly(s, '')).join('')}</g>`);
@@ -101,10 +109,10 @@ export function exportSVG(design, opts = {}) {
   out.push(`<g id="bridge" stroke-width="${px(0.4)}">${pathOf(sm.bridge, P.bridge, '')}</g>`);
   out.push('</g>');
   out.push(`<g id="labels" font-family="Helvetica, Arial, sans-serif" font-size="${px(2.6)}" text-anchor="middle" fill="#000">`);
-  for (const fr of P.frets) { const q = fr.curve[0]; out.push(`<text x="${px(q.y - b.minY + M)}" y="${px(q.x - b.minX + M - 2.5)}">${fr.n}</text>`); }
-  const n0 = P.nut[0];
+  for (const fr of P.frets) { const q = topEnd(fr.curve); out.push(`<text x="${px(q.y - b.minY + M)}" y="${px(q.x - b.minX + M - 2.5)}">${fr.n}</text>`); }
+  const n0 = topEnd(P.nut);
   out.push(`<text x="${px(n0.y - b.minY + M)}" y="${px(n0.x - b.minX + M - 2.5)}">NUT</text>`);
-  const b0 = P.bridge[0];
+  const b0 = topEnd(P.bridge);
   out.push(`<text x="${px(b0.y - b.minY + M)}" y="${px(b0.x - b.minX + M - 2.5)}">BRIDGE</text>`);
   design.strings.forEach(s => out.push(`<text x="${px(s.nut.y - b.minY + M - 4)}" y="${px(s.nut.x - b.minX + M + 0.9)}" text-anchor="end">${s.i + 1}</text>`));
   out.push(`<text x="${px(M)}" y="${px(H - 4)}" text-anchor="start" font-size="${px(3)}">${esc(title)} - 1:1, mm</text>`);
@@ -114,7 +122,8 @@ export function exportSVG(design, opts = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// DXF R2000 (AC1015, mm). X = along the board, Y = up = toward the treble edge.
+// DXF R2000 (AC1015, mm). X = along the board, Y = up = toward the treble edge
+// (toward the bass edge on a left-handed design, which is the mirrored board).
 // Every fret, the nut, the bridge line and the board end is ONE SPLINE entity
 // (degree 3, within 0.001 mm of the exact curve), so CAM can trace each slot as a
 // single curve. The board outline is a closed chain of four entities: nut spline,
@@ -142,8 +151,8 @@ export function exportDXF(design, opts = {}) {
   for (const st of P.strings) E.push({ type: 'LINE', layer: 'STRINGS', a: map(st[0]), b: map(st[1]) });
   E.push({ type: 'LINE', layer: 'CENTRE', a: map(P.centre[0]), b: map(P.centre[1]) });
   const text = (q, h, str) => E.push({ type: 'TEXT', layer: 'TEXT', at: map(q), height: h, text: ascii(str) });
-  for (const fr of P.frets) { const q = fr.curve[0]; text({ x: q.x - 4, y: q.y - 0.8 }, 2.5, String(fr.n)); }
-  text({ x: P.nut[0].x - 4, y: P.nut[0].y - 2 }, 2.5, 'NUT');
+  for (const fr of P.frets) { const q = topEnd(fr.curve); text({ x: q.x - 4, y: q.y - 0.8 }, 2.5, String(fr.n)); }
+  { const q = topEnd(P.nut); text({ x: q.x - 4, y: q.y - 2 }, 2.5, 'NUT'); }
   text({ x: b.maxX + 8, y: b.minY }, 3, titleOf(design, opts) + ' - 1:1 mm');
   const data = dxfR2000({
     entities: E,
@@ -252,7 +261,7 @@ function infoLines(design) {
   const m = design.metrics, s = design.profile && design.profile.solved || {};
   const L = v => (units === 'mm' ? `${v.toFixed(2)} mm` : `${(v / IN).toFixed(4)} in`);
   const lines = [
-    `Mode: ${p.mode}   Strings: ${p.numStrings}   Frets: ${p.numFrets}   Perpendicular at ${(p.perpRatio * 100).toFixed(1)}% of each scale (fret ${isFinite(m.perpFret) ? m.perpFret.toFixed(2) : 'bridge'})`,
+    `${p.handed === 'left' ? 'LEFT-HANDED   ' : ''}Mode: ${p.mode}   Strings: ${p.numStrings}   Frets: ${p.numFrets}   Perpendicular at ${(p.perpRatio * 100).toFixed(1)}% of each scale (fret ${isFinite(m.perpFret) ? m.perpFret.toFixed(2) : 'bridge'})`,
     `Scales: ${L(m.scaleRange[0])} to ${L(m.scaleRange[1])}   Nut width ${L(design.widths.nut)}   Bridge width ${L(design.widths.bridge)}   Edge margin ${L(p.edgeMargin)}`,
     `Largest fret bow (sagitta) ${m.maxSagitta.toFixed(2)} mm at fret ${m.maxSagittaFret ?? '-'}   Tightest radius ${isFinite(m.minRadius) ? m.minRadius.toFixed(0) + ' mm' : 'straight'}   Frets with an S: ${m.inflectingFrets}`,
   ];
@@ -280,11 +289,11 @@ function drawBoard(pg, P, design, T) {
   pg.stroke(1.0); pg.poly(P.nut.map(T));
   for (const fr of P.frets) {
     pg.stroke(fr.n === 12 ? 0.6 : 0.4); pg.poly(fr.curve.map(T));
-    const [x, y] = T(fr.curve[0]); pg.text(x, y + 5, String(fr.n), 6.5, { align: 'center' });
+    const [x, y] = T(topEnd(fr.curve)); pg.text(x, y + 5, String(fr.n), 6.5, { align: 'center' });
   }
   pg.stroke(0.6); pg.dash(4, 2); pg.poly(P.bridge.map(T));
-  { const [x, y] = T(P.nut[0]); pg.text(x, y + 5, 'NUT', 6.5, { align: 'center', bold: true }); }
-  { const [x, y] = T(P.bridge[0]); pg.text(x, y + 5, 'BRIDGE', 6.5, { align: 'center', bold: true }); }
+  { const [x, y] = T(topEnd(P.nut)); pg.text(x, y + 5, 'NUT', 6.5, { align: 'center', bold: true }); }
+  { const [x, y] = T(topEnd(P.bridge)); pg.text(x, y + 5, 'BRIDGE', 6.5, { align: 'center', bold: true }); }
   for (const s of design.strings) { const [x, y] = T(s.nut); pg.text(x - 6, y - 2, String(s.i + 1), 6, { align: 'right', gray: 0.3 }); }
 }
 
@@ -358,7 +367,7 @@ export function exportPDF(design, opts = {}) {
     const Tuv = (u, v) => [left + (u - ua) * MM2PT, top - (v - va) * MM2PT];
     const k = j * nu + i + 1;
     pg.text(left, (PAGE_H - MARGIN) * MM2PT - 9, `${title} - 1:1 TEMPLATE - tile ${k} of ${total} (column ${i + 1}/${nu}, row ${j + 1}/${nv})`, 9, { bold: true });
-    pg.text(left, (PAGE_H - MARGIN) * MM2PT - 19, 'Print at 100% / Actual size on Letter landscape. Nut on the left, treble edge at the top.', 7, { gray: 0.35 });
+    pg.text(left, (PAGE_H - MARGIN) * MM2PT - 19, `Print at 100% / Actual size on Letter landscape. ${frameNote(design)}`, 7, { gray: 0.35 });
     rulers(pg, left, (PAGE_H - MARGIN - 13) * MM2PT);
 
     pg.clip(left, bottom, areaW * MM2PT, areaH * MM2PT);
@@ -413,7 +422,7 @@ export function exportPDFFull(design, opts = {}) {
 
   // ---- title block
   pg.text(X(M), Y(M) - 13, `${title} - FULL-SIZE 1:1`, 14, { bold: true });
-  pg.text(X(M), Y(M) - 25, `Single page, ${W.toFixed(0)} x ${H.toFixed(0)} mm (${(W / IN).toFixed(2)} x ${(H / IN).toFixed(2)} in). Print or plot at 100% / Actual size, no scaling. Nut on the left, treble edge at the top.`, 8, { gray: 0.35 });
+  pg.text(X(M), Y(M) - 25, `Single page, ${W.toFixed(0)} x ${H.toFixed(0)} mm (${(W / IN).toFixed(2)} x ${(H / IN).toFixed(2)} in). Print or plot at 100% / Actual size, no scaling. ${frameNote(design)}`, 8, { gray: 0.35 });
   rulers(pg, X(M), Y(M + 22));
 
   // ---- 1:1 drawing
